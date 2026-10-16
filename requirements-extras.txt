@@ -1,0 +1,19 @@
+# Optional extras for Parity.
+#
+# Parity's core (XML import, building, exporting) is pure standard library.
+# These are only needed for the direct rekordbox database features: reading
+# ~/Library/Pioneer/rekordbox/master.db and the ANLZ phrase/beat-grid analysis
+# files that live beside it.
+#
+#   python3 tools/install_extras.py
+#
+# Anything not installed here degrades to the XML export path; /api/state and
+# /api/rekordbox report which mode is active.
+#
+# numpy is what the energy-from-audio measurement does its maths with (see
+# parity/audio.py).  ffmpeg is still a *program* you install yourself
+# (brew install ffmpeg); numpy is needed as well, and librosa on top of it is
+# optional.  GET /api/energy/audio reports the two separately, so a missing
+# numpy is never reported as a missing ffmpeg.
+pyrekordbox>=0.5
+numpy>=1.24

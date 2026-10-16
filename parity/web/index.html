@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Parity — harmonic DJ set builder</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="topbar">
+  <!-- The mark: one ring cut into two equal halves on the same 22° line, cyan
+       and coral. Two halves, level with each other -- which is the name. -->
+  <div class="brand" title="Parity — harmonic DJ set builder">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+      <g transform="rotate(-22 16 16)" fill="none" stroke-width="3.14">
+        <circle cx="16" cy="16" r="9.6" stroke="#45BEEA"
+                stroke-dasharray="28.239 32.079"></circle>
+        <circle cx="16" cy="16" r="9.6" stroke="#FF8963"
+                stroke-dasharray="28.239 32.079" stroke-dashoffset="30.159"></circle>
+      </g>
+    </svg>
+    <span class="brand-word">Parity</span>
+    <em>local</em>
+  </div>
+  <div id="preview" class="preview" hidden>
+    <button id="previewToggle" class="icon-btn preview-play" title="Play">▶</button>
+    <div class="preview-body">
+      <div id="previewTitle" class="preview-title"></div>
+      <div class="preview-track"><div id="previewBar" class="preview-bar"></div></div>
+    </div>
+    <span id="previewTime" class="preview-time">0:00 / 0:00</span>
+    <div class="preview-cues" id="previewCues"></div>
+    <button id="previewCuesEdit" class="icon-btn" title="Edit this track's cues on the waveform">〰</button>
+    <button id="previewBack" class="icon-btn" title="Back 10 seconds">↺</button>
+    <button id="previewFwd" class="icon-btn" title="Forward 10 seconds">↻</button>
+    <button id="previewStop" class="icon-btn" title="Stop and close the preview">✕</button>
+  </div>
+
+  <div class="toolbar">
+    <button id="reloadBtn" class="btn ghost" title="Re-read the library this app has stored">Reload</button>
+    <!-- One button, two panels.  They used to be a toolbar button each, which
+         made two ways of dealing with files read as two unrelated features. -->
+    <div class="dropdown">
+      <button id="toolsBtn" class="btn ghost"
+              title="Rename and convert a folder of downloads, or manage what is in rekordbox and AUTO/PILOT">Files &amp; libraries ▾</button>
+      <div class="menu left" id="toolsMenu" hidden>
+        <button data-tool="manage">Manage libraries <small>playlists and tracks</small></button>
+        <button data-tool="ingest">Rename &amp; convert <small>a folder of downloads</small></button>
+      </div>
+    </div>
+    <span id="libraryStatus" class="status">No library loaded</span>
+  </div>
+  <div class="toolbar right">
+    <input id="setName" class="text-input" value="Parity Set" aria-label="Set name">
+    <button id="saveSetBtn" class="btn ghost">Save set</button>
+    <button id="deleteSetBtn" class="btn ghost" title="Delete the saved set currently loaded (click twice)">Delete</button>
+    <div class="dropdown">
+      <button id="exportBtn" class="btn ghost">Export ▾</button>
+      <div class="menu" id="exportMenu" hidden>
+        <label class="menu-toggle" title="Write the generated hot cues (A downbeat, B intro end, C build, D drop, E breakdown, F drop 2, G outro, H mix-out) and memory cues into the XML">
+          <input type="checkbox" id="exportCues" checked> Inject hot + memory cues
+        </label>
+        <label class="menu-toggle" title="Append the set tag to each track's comment: [E7] [peak] 14/24 — the energy, the part it plays in this set, and where it sits. Anything you wrote in the comment is kept.">
+          <input type="checkbox" id="exportTags" checked> Tag comments <small>[E7] [peak] 14/24</small>
+        </label>
+        <div class="menu-note">Tracks whose cues are your own keep them either way — set that under <b>Write ▾</b>.</div>
+        <button data-format="preflight">Pre-flight check <small>missing files, duplicates</small></button>
+        <button data-format="package">Set package (.zip) <small>XML + set list + cue log + pre-flight</small></button>
+        <button data-format="autopilot-xml">Send to AUTO/PILOT <small>saves the XML to import there</small></button>
+        <button data-format="autopilot">AUTO/PILOT bundle <small>XML + manifest, zipped</small></button>
+        <button data-format="rekordbox">rekordbox XML <small>re-importable</small></button>
+        <button data-format="m3u8">M3U8 <small>any player</small></button>
+        <button data-format="csv">CSV <small>spreadsheet</small></button>
+        <button data-format="txt">Text set list <small>printable</small></button>
+      </div>
+    </div>
+    <div class="dropdown">
+      <button id="writeBtn" class="btn ghost"
+              title="Write the built set straight into rekordbox's master.db or AUTO/PILOT's own library">Write ▾</button>
+      <div class="menu" id="writeMenu" hidden>
+        <div id="writeHint" class="menu-note">Checking the libraries…</div>
+        <button data-write="dry">Dry run <small>list every row, write nothing</small></button>
+        <button data-write="rekordbox">rekordbox master.db <small>cues A–H + playlist order</small></button>
+        <div class="menu-note">AUTO/PILOT is not written to directly — use “Send to AUTO/PILOT” and import the XML there, which is what makes it analyse the tracks.</div>
+        <label class="menu-toggle" title="Also place a memory cue at every phrase boundary. This replaces every memory cue on those tracks, including ones rekordbox placed itself.">
+          <input type="checkbox" id="writeMemory"> Include memory cues
+        </label>
+        <label class="field menu-field" title="What to do when a track already has hot cues you placed by hand in rekordbox. Cues Parity wrote itself are always replaced, so this does not freeze the library on the first write.">
+          <span>Already cued tracks</span>
+          <select id="writeCuePolicy">
+            <option value="overwrite" selected>Replace them (A–H)</option>
+            <option value="keep">Keep them, skip that track</option>
+          </select>
+        </label>
+        <div id="writeCueNote" class="menu-note"></div>
+        <label class="menu-toggle" title="Also append the set tag ([E7] [peak] 14/24) to each track's comment in the library. Your own comment is kept, and only the tag Parity wrote before is replaced, so tagging the same track twice does not stack up.">
+          <input type="checkbox" id="writeTags"> Tag comments in the library
+        </label>
+        <label class="menu-toggle" title="Point an existing playlist of this name at the set, instead of leaving playlists alone">
+          <input type="checkbox" id="writePlaylist" checked> Write the playlist order
+        </label>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main class="layout">
+  <!-- ------------------------------------------------ left: library -->
+  <section class="pane left">
+    <div class="pane-head">
+      <h2>Playlists</h2>
+      <span id="libraryMeta" class="muted"></span>
+    </div>
+    <div id="playlistTree" class="tree">
+      <p class="empty"><b>Parity reads your rekordbox database directly.</b><br>
+        There is nothing to import.<br>
+        <small>No database to read, or Parity cannot open it? Drag a collection XML export
+        (<b>File → Export Collection in xml format</b>) onto this window and that is loaded instead.</small></p>
+    </div>
+    <div id="rxSummary" class="rx-summary" hidden></div>
+
+    <div class="pane-head">
+      <h2>Track pool <span id="poolCount" class="pill">0</span></h2>
+      <select id="savedSets" class="mini-select" title="Load a saved set"><option value="">Saved sets…</option></select>
+    </div>
+    <div class="pool-filters">
+      <input id="poolSearch" class="text-input" placeholder="Search artist, title, genre…">
+      <select id="poolSort" class="mini-select">
+        <option value="title">A–Z</option>
+        <option value="bpm">BPM</option>
+        <option value="energy">Energy</option>
+        <option value="key">Key</option>
+        <option value="genre">Genre</option>
+      </select>
+    </div>
+    <div class="pool-filters">
+      <select id="folderSel" class="mini-select wide" title="Limit the pool to one folder on disk">
+        <option value="">All folders</option>
+      </select>
+    </div>
+    <div class="pool-toggles">
+      <label class="pool-toggle" title="Hide tracks that only exist on a streaming service (SoundCloud, Beatsource…)">
+        <input type="checkbox" id="localOnly"> Local files only
+      </label>
+      <label class="pool-toggle" title="Only show tracks whose cues have been generated">
+        <input type="checkbox" id="cuesOnly"> Analysed only
+      </label>
+    </div>
+    <div class="cue-bar">
+      <button id="analyseBtn" class="btn tiny" title="Read rekordbox's phrase analysis and place hot cues A–H">Analyse cues</button>
+      <button id="audioEnergyBtn" class="btn tiny"
+              title="Measure loudness, brightness, dynamic range and drive in each local file with ffmpeg, and use the result as that track's energy">Measure energy</button>
+      <span id="cueStatus" class="muted"></span>
+      <span id="audioStatus" class="muted"></span>
+    </div>
+    <div class="table-head">
+      <!-- one span per column, in the order the grid declares them:
+           add · preview · waveform · use · track · bpm · key · energy -->
+      <span class="c-add"></span><span></span><span></span><span class="c-use">Use</span><span class="c-track">Track</span>
+      <span class="c-bpm">BPM</span><span class="c-key">Key</span><span class="c-energy">Energy</span>
+    </div>
+    <div id="trackList" class="tracklist"></div>
+  </section>
+
+  <!-- ------------------------------------------------- right: builder -->
+  <section class="pane right">
+    <div class="builder-grid">
+      <div class="controls-card">
+        <h3>Set shape</h3>
+        <!-- Every control below reshapes the build; the curve card shows what
+             came of it, so the two cards are read together. -->
+        <label class="field">
+          <span>Energy curve</span>
+          <select id="templateSel"></select>
+        </label>
+        <label class="field">
+          <span>Set length <output id="lengthOut">20</output> tracks</span>
+          <div class="length-row">
+            <input id="lengthRange" type="range" min="2" max="1000" value="20">
+            <input id="lengthInput" class="energy-input" type="number" min="2" max="1000" value="20"
+                   aria-label="Number of tracks in the set">
+          </div>
+        </label>
+        <label class="field">
+          <span>Harmonic strictness</span>
+          <select id="strictnessSel">
+            <option value="strict">Strict — only compatible keys</option>
+            <option value="normal" selected>Normal — prefer compatible</option>
+            <option value="free">Free — key is a hint</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Energy weight <output id="energyOut">1.0</output></span>
+          <input id="energyWeight" type="range" min="0" max="3" step="0.1" value="1">
+        </label>
+        <label class="field">
+          <span>Harmonic weight <output id="keyOut">1.0</output></span>
+          <input id="keyWeight" type="range" min="0" max="3" step="0.1" value="1">
+        </label>
+        <label class="field">
+          <span>BPM smoothness <output id="bpmOut">1.0</output></span>
+          <input id="bpmWeight" type="range" min="0" max="3" step="0.1" value="1">
+        </label>
+        <label class="field">
+          <span>BPM tolerance <output id="tolOut">6</output></span>
+          <input id="bpmTolerance" type="range" min="1" max="20" value="6">
+        </label>
+        <label class="field">
+          <span>No artist within <output id="artistOut">3</output> tracks</span>
+          <input id="artistWindow" type="range" min="0" max="10" value="3">
+        </label>
+        <div class="button-row">
+          <button id="buildBtn" class="btn primary">Build set</button>
+          <button id="optimizeBtn" class="btn">Optimize</button>
+          <button id="clearBtn" class="btn ghost">Clear</button>
+          <button id="undoBtn" class="btn ghost" title="Undo (Ctrl+Z)">Undo</button>
+        </div>
+      </div>
+
+      <div class="curve-card">
+        <div class="pane-head">
+          <h3>Energy curve <small class="muted">drag a point to reshape</small></h3>
+          <button id="resetCurveBtn" class="btn tiny ghost">Reset to template</button>
+        </div>
+        <svg id="curveChart" viewBox="0 0 600 190" preserveAspectRatio="none" role="img"
+             aria-label="Target energy curve against the built set"></svg>
+        <div id="stats" class="stats"></div>
+        <div id="warnings" class="warnings"></div>
+      </div>
+    </div>
+
+    <div class="pane-head set-head">
+      <h2>Your set <span id="setCount" class="pill">0</span></h2>
+      <span class="muted">drag to reorder · lock to pin · transitions checked as you go</span>
+    </div>
+    <div id="setList" class="setlist"></div>
+  </section>
+</main>
+
+<section id="managePanel" class="manage" hidden>
+  <div class="pane-head">
+    <h2>Manage libraries</h2>
+    <span id="manageStatus" class="muted"></span>
+    <button id="manageClose" class="btn tiny ghost">Close</button>
+  </div>
+  <div class="manage-grid">
+    <div class="manage-col">
+      <h3>rekordbox <small id="rxManageNote" class="muted"></small></h3>
+      <div id="rxPlaylists" class="manage-list"></div>
+      <div class="manage-actions">
+        <button id="rxDeleteTracks" class="btn tiny ghost" title="Delete the built set's tracks from the rekordbox collection. The audio files stay on disk.">Delete this set's tracks…</button>
+      </div>
+    </div>
+    <div class="manage-col">
+      <h3>AUTO/PILOT <small id="apManageNote" class="muted"></small></h3>
+      <div id="apPlaylists" class="manage-list"></div>
+      <div class="manage-actions">
+        <button id="apDeleteTracks" class="btn tiny ghost" title="Delete the built set's tracks from AUTO/PILOT's library. The audio files stay on disk.">Delete this set's tracks…</button>
+      </div>
+    </div>
+  </div>
+  <p class="manage-note">
+    Every deletion starts as a dry run: the report below lists each row that would go, and
+    committing it is a second click. <b>Remove set</b> takes the built set's tracks out of a
+    playlist and leaves everything else alone.
+  </p>
+</section>
+
+<section id="ingestPanel" class="manage ingest" hidden>
+  <div class="pane-head">
+    <h2>Rename &amp; convert</h2>
+    <span id="ingestStatus" class="muted"></span>
+    <button id="ingestClose" class="btn tiny ghost">Close</button>
+  </div>
+  <div class="ingest-form">
+    <div class="field">
+      <span>Folder with the downloads</span>
+      <div class="path-row">
+        <input id="ingestSource" class="text-input" placeholder="/Users/you/Downloads/staging"
+               aria-label="Folder to read">
+        <!-- Shown only in the app window: a browser refuses to tell a page the
+             real path of a folder the user picked (see pickFolder in app.js). -->
+        <button id="ingestSourcePick" class="btn tiny ghost pick-btn"
+                aria-label="Choose the folder to read" title="Choose the folder to read">Choose…</button>
+      </div>
+    </div>
+    <div class="field">
+      <span>Write the converted files to <small class="muted">blank = a “converted” folder inside it</small></span>
+      <div class="path-row">
+        <input id="ingestDestination" class="text-input" placeholder="leave blank to keep them together"
+               aria-label="Folder to write to">
+        <button id="ingestDestinationPick" class="btn tiny ghost pick-btn"
+                aria-label="Choose the folder to write to" title="Choose the folder to write to">Choose…</button>
+      </div>
+    </div>
+    <div class="ingest-row">
+      <label class="field">
+        <span>Format</span>
+        <!-- The options are here rather than fetched, so the list is never blank
+             when the API cannot answer; syncIngestForm only adds to them. -->
+        <select id="ingestFormat" class="mini-select">
+          <option value="aiff" selected>AIFF</option>
+          <option value="wav">WAV</option>
+        </select>
+      </label>
+      <div class="pool-toggles">
+        <label class="pool-toggle" title="Read the length, tags and leading silence of each file with ffprobe">
+          <input type="checkbox" id="ingestMeasure" checked> Measure silence
+        </label>
+        <label class="pool-toggle" title="Also read the subfolders of the folder above">
+          <input type="checkbox" id="ingestRecursive" checked> Include subfolders
+        </label>
+        <label class="pool-toggle" title="Cut the leading silence out during the conversion, so the converted file starts where the music does">
+          <input type="checkbox" id="ingestTrim"> Trim silence
+        </label>
+        <label class="pool-toggle" title="Replace files that are already in the destination. Off, they are left alone and reported.">
+          <input type="checkbox" id="ingestOverwrite"> Replace existing
+        </label>
+      </div>
+    </div>
+  </div>
+  <div class="manage-actions ingest-actions">
+    <button id="ingestScanBtn" class="btn tiny">Scan folder</button>
+    <button id="ingestRunBtn" class="btn tiny primary" hidden>Convert</button>
+    <span id="ingestSummary" class="muted"></span>
+  </div>
+  <div id="ingestReport" class="write-report-body ingest-report"></div>
+  <!-- The app's open-panel delegate answers this click with a native folder
+       chooser and hands the path back through parityPickedPath (app.js). -->
+  <input type="file" id="folderPick" webkitdirectory hidden>
+</section>
+
+<section id="cuePanel" class="manage cue-editor" hidden>
+  <div class="pane-head">
+    <h2 id="cueTitle">Cue editor</h2>
+    <span id="cueStatus" class="muted"></span>
+    <button id="cueClose" class="btn tiny ghost">Close</button>
+  </div>
+  <div class="cue-toolbar">
+    <label class="cue-control" title="Where a dragged cue lands: the nearest point on the grid, or anywhere at all">
+      <span>Snap</span>
+      <select id="cueSnap" class="mini-select">
+        <option value="sixteenth" selected>1/16 note</option>
+        <option value="beat">Beat</option>
+        <option value="bar">Bar</option>
+        <option value="off">Off</option>
+      </select>
+    </label>
+    <label class="cue-control" title="Zoom in for a precise move; drag the waveform sideways to pan">
+      <span>Zoom</span>
+      <select id="cueZoom" class="mini-select">
+        <option value="1" selected>Whole track</option>
+        <option value="2">2×</option>
+        <option value="4">4×</option>
+        <option value="8">8×</option>
+        <option value="16">16×</option>
+      </select>
+    </label>
+    <span id="cueReadout" class="cue-readout" aria-live="polite"></span>
+    <span class="cue-legend">
+      <span class="chip band-low">bass</span>
+      <span class="chip band-mid">mids</span>
+      <span class="chip band-high">hats</span>
+      <span class="chip zone-in">mix-in</span>
+      <span class="chip zone-out">mix-out</span>
+    </span>
+  </div>
+  <div class="cue-canvas-wrap">
+    <canvas id="cueCanvas" width="1000" height="230"
+            aria-label="Waveform of this track with its hot cues, each draggable"></canvas>
+  </div>
+  <p class="manage-note">
+    <b>Drag a flag</b> to move a cue: it lands on the grid, hold <b>Shift</b> to place it
+    anywhere. A cue you move is <b>locked</b> and stays where you put it the next time you
+    press <b>Analyse cues</b>; click a flag without dragging to lock or unlock it.
+    <b>Drag the waveform</b> to pan, <b>scroll</b> over it to zoom, and <b>click</b> it to play
+    from that point. The band along the bottom is the mix-in and mix-out window, the thin
+    lines are 8 bars and the brighter ones 32.
+  </p>
+</section>
+
+<section id="preflightPanel" class="write-report preflight" hidden>
+  <div class="pane-head">
+    <h2 id="preflightTitle">Pre-flight</h2>
+    <span id="preflightStatus" class="muted"></span>
+    <button id="preflightClose" class="btn tiny ghost">Hide</button>
+  </div>
+  <div id="preflightBody" class="write-report-body"></div>
+</section>
+
+<section id="writeReport" class="write-report" hidden>
+  <div class="pane-head">
+    <h2 id="writeReportTitle">Write report</h2>
+    <span id="reportPending" class="muted"></span>
+    <button id="reportCommit" class="btn tiny primary" hidden>Write it</button>
+    <button id="reportCancel" class="btn tiny ghost" hidden>Cancel</button>
+    <button id="writeReportClose" class="btn tiny ghost">Hide</button>
+  </div>
+  <div id="writeReportBody" class="write-report-body"></div>
+</section>
+
+<div id="toast" class="toast" hidden></div>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,937 @@
+/*
+ * Parity -- the look.
+ *
+ * One idea, carried through: everything in this app is a pair. The target curve
+ * and the set that came out of it, the track you have and the track it mixes
+ * into, the two halves of the mark. So the palette is two colours on graphite
+ * -- cyan for what you asked for, coral for what you got -- and each is used
+ * for exactly that, everywhere, rather than as decoration.
+ *
+ * Every colour, radius and shadow is a token at the top. Nothing below reaches
+ * for a literal colour except the eight rekordbox hot-cue pads, which are the
+ * colours rekordbox itself uses and so are not ours to change.
+ */
+
+:root {
+  /* surfaces, darkest to lightest */
+  --bg: #08090d;
+  --surface: #11141c;
+  --surface-2: #171b25;
+  --surface-3: #1d222e;
+  --surface-4: #242a38;
+  --line: #232936;
+  --line-2: #2f3747;
+
+  /* text */
+  --text: #e9edf6;
+  --text-2: #b8c1d2;
+  --muted: #7c8698;
+
+  /* the pair */
+  --accent: #4cc6f0;          /* cyan  -- what was asked for */
+  --accent-2: #ff8a65;        /* coral -- what came out */
+  --accent-dim: #1f5872;
+  --accent-2-dim: #6b3a28;
+  --accent-ink: #04161f;      /* text on a cyan fill */
+  --glow: rgba(76, 198, 240, .18);
+  --glow-2: rgba(255, 138, 101, .18);
+
+  /* states */
+  --good: #4ce0a8;
+  --ok: #4ce0a8;
+  --warn: #ffc46b;
+  --bad: #ff6e7c;
+  --mid: #8fb6ff;
+
+  /* shape */
+  --r-sm: 7px;
+  --r: 10px;
+  --r-lg: 14px;
+  --hair: inset 0 1px 0 rgba(255, 255, 255, .045);
+  --shadow-1: 0 1px 0 rgba(255, 255, 255, .03) inset, 0 10px 30px -18px rgba(0, 0, 0, .9);
+  --shadow-2: 0 24px 60px -22px rgba(0, 0, 0, .85), 0 2px 8px rgba(0, 0, 0, .5);
+  --ease: cubic-bezier(.22, .61, .36, 1);
+
+  /* Set by the app shell (main.swift) so the header clears the traffic lights:
+     the title bar is transparent and the page runs under it. */
+  --shell-lead: 0px;
+
+  color-scheme: dark;
+  font-synthesis: none;
+}
+
+* { box-sizing: border-box; }
+
+/*
+ * The browser's own rule for [hidden] is a UA-origin stylesheet, and any author
+ * declaration beats it -- so `display: flex` on a panel silently wins and the
+ * panel stays on screen however the JS sets the attribute. Every docked panel
+ * (Manage libraries, Rename & convert, the write report, the preview pill) is shown
+ * and hidden with that attribute, so it has to win here, once, for all of them.
+ */
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter, Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/*
+ * Two very wide, very dim washes of the pair colour, so the window has a light
+ * source instead of being a flat rectangle of #08090d. Fixed, so scrolling a
+ * pane does not drag the light around with it.
+ */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(1100px 520px at 8% -12%, rgba(76, 198, 240, .10), transparent 62%),
+    radial-gradient(900px 480px at 102% 108%, rgba(255, 138, 101, .07), transparent 60%);
+}
+
+button, input, select { font: inherit; color: inherit; }
+button { font-feature-settings: "tnum" 1; }
+
+::selection { background: rgba(76, 198, 240, .28); }
+
+/* Keyboard users get a ring; mouse users never see one. */
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px rgba(76, 198, 240, .55);
+}
+
+/* ------------------------------------------------------------ scrollbars */
+* { scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: #3d4759; background-clip: content-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/*
+ * In the app window the page runs under a transparent title bar, so the mark
+ * and the traffic lights would sit on top of each other. The shell moves the
+ * header's content clear of them instead. 74px is where the green button's
+ * right edge lands; a browser is told nothing and keeps its 16px.
+ */
+html.shell-app { --shell-lead: 74px; }
+
+/* ------------------------------------------------------------ topbar */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 11px calc(16px + var(--shell-lead));
+  background: linear-gradient(180deg, rgba(21, 25, 34, .92), rgba(12, 14, 20, .86));
+  backdrop-filter: blur(20px) saturate(1.5);
+  -webkit-backdrop-filter: blur(20px) saturate(1.5);
+}
+/* The hairline under the header is the pair's two colours, so the mark and the
+   chrome are the same idea. */
+.topbar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent, rgba(76, 198, 240, .45) 22%, rgba(255, 138, 101, .35) 62%, transparent);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: none;
+  user-select: none;
+  cursor: default;
+}
+.brand-mark { width: 23px; height: 23px; display: block; flex: none; }
+.brand-word {
+  font-size: 15.5px;
+  font-weight: 700;
+  letter-spacing: -.2px;
+  background: linear-gradient(180deg, #ffffff, #c9d3e3);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  /* WebKit needs this rather than the colour alone to fill the glyphs with the
+     gradient above; without it the word renders as an empty box. */
+  -webkit-text-fill-color: transparent;
+}
+.brand em {
+  font-style: normal;
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .09em;
+  color: var(--muted);
+  border: 1px solid var(--line-2);
+  background: rgba(255, 255, 255, .03);
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+.toolbar { display: flex; align-items: center; gap: 7px; }
+.toolbar.right { margin-left: auto; }
+.status {
+  color: var(--muted);
+  font-size: 11.5px;
+  margin-left: 4px;
+  max-width: 30ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------- preview (topbar player) */
+.preview {
+  display: flex; align-items: center; gap: 9px; min-width: 0; max-width: 42vw;
+  background: linear-gradient(180deg, var(--surface-3), var(--surface-2));
+  border: 1px solid var(--accent-dim);
+  border-radius: 999px; padding: 4px 12px 4px 5px;
+  box-shadow: 0 0 0 1px rgba(76, 198, 240, .06), 0 8px 24px -16px rgba(76, 198, 240, .5);
+}
+.preview-play {
+  width: 27px; height: 27px; border-radius: 50%; flex: none;
+  background: linear-gradient(180deg, #6fd3f7, var(--accent));
+  color: var(--accent-ink); font-size: 11px; text-align: center;
+  border: 0; box-shadow: 0 3px 10px -3px rgba(76, 198, 240, .7);
+}
+.preview-body { min-width: 0; flex: 1; }
+.preview-title {
+  font-size: 11px; font-weight: 500;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.preview-track {
+  height: 4px; background: rgba(0, 0, 0, .45); border-radius: 999px;
+  overflow: hidden; margin-top: 3px;
+}
+.preview-bar {
+  height: 100%; width: 0; border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), #8ee0ff);
+}
+.preview-time {
+  color: var(--muted); font-size: 10.5px;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.preview-cues { display: flex; align-items: center; gap: 3px; flex: none; }
+.preview-error { color: var(--bad); }
+
+/* One pad per hot cue, in rekordbox's own colours. */
+.cue-jump {
+  border: 1px solid var(--line); background: var(--surface-2); border-radius: 6px;
+  padding: 1px 5px; font-size: 10px; font-weight: 700; cursor: pointer; color: var(--muted);
+  transition: background .12s, border-color .12s, color .12s;
+}
+.cue-jump:hover { background: var(--surface-4); border-color: var(--text-2); color: var(--text); }
+.cue-jump.c-a { border-color: #a01f1f; color: #ff6b6b; }
+.cue-jump.c-b { border-color: #a05a1f; color: #ffab6b; }
+.cue-jump.c-c { border-color: #a08a1f; color: #ffd76b; }
+.cue-jump.c-d { border-color: #1f8a52; color: var(--good); }
+.cue-jump.c-e { border-color: #1f8a8a; color: #6be0e0; }
+.cue-jump.c-f { border-color: #6a3fa0; color: #c39bff; }
+.cue-jump.c-g { border-color: #a01f6a; color: #ff7fc0; }
+.cue-jump.c-h { border-color: #1f5aa0; color: var(--mid); }
+
+/* ------------------------------------------------------------ buttons */
+.btn {
+  background: linear-gradient(180deg, var(--surface-3), var(--surface-2));
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  padding: 6px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: var(--hair);
+  transition: background .13s var(--ease), border-color .13s var(--ease),
+              color .13s var(--ease), transform .06s var(--ease), box-shadow .13s var(--ease);
+}
+.btn:hover {
+  background: linear-gradient(180deg, var(--surface-4), #1a1f2b);
+  border-color: #3b4557;
+}
+.btn:active { transform: translateY(1px); }
+.btn.primary {
+  background: linear-gradient(180deg, #6fd3f7, var(--accent));
+  border-color: #2f9fc9;
+  color: var(--accent-ink);
+  font-weight: 650;
+  box-shadow: 0 6px 18px -8px rgba(76, 198, 240, .85), var(--hair);
+}
+.btn.primary:hover {
+  background: linear-gradient(180deg, #86dcff, #4dcbf6);
+  border-color: #4dbbdf;
+}
+.btn.ghost { background: transparent; box-shadow: none; border-color: transparent; color: var(--text-2); }
+.btn.ghost:hover { background: var(--surface-2); border-color: var(--line-2); color: var(--text); }
+.btn.tiny { padding: 3px 8px; font-size: 11px; border-radius: 6px; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn:disabled:hover { background: linear-gradient(180deg, var(--surface-3), var(--surface-2)); border-color: var(--line-2); }
+
+.icon-btn {
+  background: none; border: 1px solid transparent; border-radius: 6px;
+  cursor: pointer; padding: 3px 6px; color: var(--muted); line-height: 1;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.icon-btn:hover { border-color: var(--line-2); background: var(--surface-2); color: var(--text); }
+.icon-btn.on { color: var(--accent); }
+/* A control with nothing behind it yet: streaming tracks have no waveform. */
+.icon-btn.off { opacity: .35; cursor: not-allowed; }
+
+.add-btn, .play-btn {
+  border: 1px solid var(--line-2);
+  background: var(--surface-2);
+  border-radius: 6px;
+  width: 23px; height: 23px;
+  line-height: 1;
+  cursor: pointer;
+  flex: none;
+  color: var(--text-2);
+  transition: background .12s, border-color .12s, color .12s, box-shadow .12s;
+}
+.play-btn { font-size: 10px; color: var(--muted); }
+.add-btn:hover, .play-btn:hover {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+  background: var(--surface-3);
+  box-shadow: 0 0 0 3px var(--glow);
+}
+.play-btn.off { opacity: .35; cursor: not-allowed; box-shadow: none; }
+.track-row.in-set .play-btn { border-color: var(--accent-dim); }
+
+/* ------------------------------------------------------------ inputs */
+/*
+ * Every dropdown gets an explicit background and text colour.  Without them
+ * WebKit draws the control with the system's own colours (light, on a light
+ * desktop) while the inherited text colour stays pale -- which is what made
+ * "Energy curve" and "Harmonic strictness" unreadable in the build panel.
+ * The option list is drawn from the control's colours too, so it needs them as
+ * well.
+ */
+.text-input, .mini-select, .field select, select.dropdown-select {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 9px;
+  color: var(--text);
+  transition: border-color .13s var(--ease), box-shadow .13s var(--ease), background .13s var(--ease);
+}
+.text-input::placeholder { color: #5f6a7d; }
+.text-input:hover, .mini-select:hover, .field select:hover { border-color: var(--line-2); }
+.text-input:focus, .mini-select:focus, .field select:focus, select.dropdown-select:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+  box-shadow: 0 0 0 3px var(--glow);
+}
+select option { background: var(--surface-3); color: var(--text); }
+.text-input { min-width: 150px; }
+.mini-select { padding: 4px 6px; max-width: 130px; }
+.mini-select.wide { max-width: none; width: 100%; }
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 14px; height: 14px;
+  cursor: pointer;
+}
+
+/* Sliders: the OS draws a hairline track and a plain knob, which is the one
+   place a dark UI looks unfinished. Both engines are styled by hand. */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  height: 18px;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent-dim), var(--line-2));
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px; height: 13px;
+  margin-top: -4.5px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #fff, #cfd9e8);
+  border: 1px solid #8fa0b8;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, .6);
+  transition: box-shadow .13s var(--ease), transform .1s var(--ease);
+}
+input[type="range"]:hover::-webkit-slider-thumb { box-shadow: 0 0 0 5px var(--glow), 0 1px 5px rgba(0, 0, 0, .6); }
+input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.08); }
+input[type="range"]::-moz-range-track {
+  height: 4px; border-radius: 999px; background: var(--line-2);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: #fff; border: 1px solid #8fa0b8;
+}
+
+.energy-input {
+  width: 58px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 5px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.energy-input.overridden { border-color: var(--accent-dim); color: var(--accent); }
+.energy-input.review { border-color: var(--warn); }
+/* Measured from the file rather than guessed from the tags: a solid left edge,
+   so a column of them reads as "these are real numbers". */
+.energy-input.measured { border-left: 2px solid var(--ok); }
+
+/* ------------------------------------------------------------ menus */
+.dropdown { position: relative; }
+.menu {
+  position: absolute; right: 0; top: calc(100% + 7px);
+  background: linear-gradient(180deg, rgba(29, 34, 46, .97), rgba(20, 24, 33, .97));
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r);
+  overflow: hidden auto;
+  max-height: 76vh;
+  min-width: 210px;
+  box-shadow: var(--shadow-2);
+  z-index: 30;
+  animation: pop .12s var(--ease);
+}
+/* The one menu that hangs off a toolbar button on the left.  Anchored right like
+   the others it would open off the window's left edge. */
+.menu.left { left: 0; right: auto; }
+.menu button {
+  display: flex; justify-content: space-between; gap: 10px; align-items: baseline;
+  width: 100%; background: none; border: 0; text-align: left;
+  padding: 9px 13px; cursor: pointer; color: var(--text-2);
+  transition: background .1s, color .1s;
+}
+.menu button:hover { background: var(--surface-4); color: var(--text); box-shadow: inset 2px 0 0 var(--accent); }
+.menu small { color: var(--muted); font-size: 10.5px; text-align: right; }
+.menu button[disabled] { opacity: .45; cursor: not-allowed; }
+.menu button[disabled]:hover { background: none; box-shadow: none; color: var(--text-2); }
+.menu-note {
+  padding: 9px 13px; border-bottom: 1px solid var(--line);
+  color: var(--muted); font-size: 11px; line-height: 1.5; max-width: 280px;
+}
+.menu-note b { color: var(--text); font-weight: 600; }
+.menu-note.bad { color: var(--bad); }
+.menu-toggle {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 13px; border-bottom: 1px solid var(--line);
+  color: var(--muted); font-size: 11px; cursor: pointer;
+  transition: background .1s, color .1s;
+}
+.menu-toggle:hover { background: rgba(255, 255, 255, .025); color: var(--text-2); }
+.menu-toggle input { accent-color: var(--accent); }
+.menu-field { display: block; margin: 8px 13px; }
+.menu-field span { font-size: 11px; }
+.menu-field select { width: 100%; }
+.menu-field > span { color: var(--muted); display: block; margin-bottom: 4px; }
+
+/* --------------------------------------------------- direct write report */
+.write-report {
+  position: fixed; right: 12px; bottom: 12px; width: min(560px, 60vw);
+  max-height: 46vh; display: flex; flex-direction: column;
+  background: linear-gradient(180deg, rgba(23, 27, 37, .97), rgba(15, 18, 25, .97));
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-2);
+  z-index: 45;
+  animation: rise .16s var(--ease);
+}
+.write-report .pane-head { padding: 10px 13px; }
+.write-report-body {
+  overflow: auto; padding: 8px 13px 13px; font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.65;
+}
+.write-report-body h4 {
+  margin: 12px 0 5px; font-size: 10px; text-transform: uppercase;
+  letter-spacing: .09em; color: var(--muted); font-family: inherit;
+}
+.write-report-body h4:first-child { margin-top: 2px; }
+.write-report-body table { width: 100%; border-collapse: collapse; }
+.write-report-body td { padding: 2px 6px 2px 0; vertical-align: top; }
+.write-report-body td.num { text-align: right; color: var(--muted); white-space: nowrap; }
+.write-report-body .row-slot { color: var(--accent); }
+.write-report-body .warn { color: var(--bad); }
+.write-report-body .ok { color: var(--good); }
+
+/*
+ * The pre-flight report opens under the toolbar instead of in the corner the
+ * write report uses, because the two are read together: the check says what is
+ * wrong with the set, the write report says what the write will do about it.
+ */
+.write-report.preflight { top: 64px; bottom: auto; max-height: 52vh; }
+
+
+/* ------------------------------------------------------------ layout */
+.layout {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(420px, 1.25fr);
+  gap: 14px;
+  padding: 14px;
+  height: calc(100vh - 56px);
+}
+.pane {
+  background: linear-gradient(180deg, var(--surface-2), var(--surface));
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: var(--shadow-1);
+}
+.pane-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px 9px;
+}
+.pane-head h2, .pane-head h3 {
+  margin: 0; font-size: 10.5px; font-weight: 650;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--text-2);
+}
+.pane-head h2 small { text-transform: none; letter-spacing: 0; }
+/* A tick of the pair colour in front of every section title: it is what makes a
+   long column of panels scan as sections rather than as one list. */
+.pane-head > h2::before, .pane-head > h3::before {
+  content: ""; display: inline-block;
+  width: 3px; height: 11px; margin-right: 8px; vertical-align: -1px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--accent), var(--accent-2));
+}
+.pane-head.set-head { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 12px; }
+.muted { color: var(--muted); font-size: 11px; }
+.pill {
+  background: var(--surface-3); border: 1px solid var(--line-2);
+  border-radius: 999px; padding: 1px 8px; font-size: 10.5px; color: var(--text-2);
+  font-variant-numeric: tabular-nums; letter-spacing: 0;
+}
+.empty {
+  color: var(--muted); padding: 18px 16px; line-height: 1.7; font-size: 12px;
+}
+.empty b { color: var(--text-2); font-weight: 600; }
+.empty small { font-size: 11px; line-height: 1.6; display: inline-block; margin-top: 6px; }
+
+/* ------------------------------------------------------------ tree */
+.tree { overflow: auto; max-height: 32%; padding: 0 9px 9px; }
+.tree details, .tree .leaf { margin: 1px 0; }
+.tree summary {
+  cursor: pointer; padding: 5px 8px; border-radius: 8px; color: var(--text-2);
+  list-style: none; display: flex; justify-content: space-between; gap: 8px;
+  font-size: 12px;
+  transition: background .1s, color .1s;
+}
+.tree summary::-webkit-details-marker { display: none; }
+.tree summary::marker { content: ""; }
+.tree summary:hover, .tree .leaf:hover { background: var(--surface-3); color: var(--text); }
+.tree .leaf {
+  display: flex; justify-content: space-between; gap: 8px;
+  padding: 5px 8px 5px 19px; border-radius: 8px; cursor: pointer;
+  color: var(--text-2); font-size: 12px;
+  transition: background .1s, color .1s;
+}
+.tree .leaf.active {
+  background: linear-gradient(90deg, rgba(76, 198, 240, .18), rgba(76, 198, 240, .04));
+  color: #fff;
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.tree .count { color: var(--muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------------ pool */
+.pool-filters { display: flex; gap: 8px; padding: 0 14px 9px; }
+.pool-filters .text-input { flex: 1; min-width: 0; }
+.pool-toggle {
+  display: flex; align-items: center; gap: 6px; padding: 0 14px 9px;
+  color: var(--muted); font-size: 11px; cursor: pointer;
+}
+.pool-toggle:hover { color: var(--text-2); }
+.pool-toggle input { accent-color: var(--accent); }
+.pool-toggles { display: flex; flex-wrap: wrap; gap: 0 4px; }
+.pool-toggles .pool-toggle { padding-right: 6px; }
+.cue-bar {
+  display: flex; align-items: center; gap: 7px;
+  padding: 0 14px 9px;
+}
+.cue-bar .muted { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Direct-master.db status strip. */
+.rx-summary {
+  margin: 0 14px 9px; padding: 8px 10px;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  font-size: 11px; color: var(--muted); line-height: 1.65;
+}
+.rx-summary b { color: var(--text); }
+.rx-summary .rx-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px; word-break: break-all;
+}
+.rx-summary.warn { border-color: #5a4527; background: rgba(255, 196, 107, .06); }
+
+/* Cue badge: the four injected hot cues and how they were found. */
+.cue-badge {
+  display: inline-flex; align-items: center; gap: 3px;
+  border-radius: 999px; padding: 1px 6px; font-size: 10px;
+  border: 1px solid var(--accent-dim); background: rgba(76, 198, 240, .1); color: var(--accent);
+  margin-left: 6px; cursor: help;
+}
+.cue-badge.low { border-color: #5a4527; background: rgba(255, 196, 107, .1); color: var(--warn); }
+.cue-badge .slots { letter-spacing: .5px; font-weight: 600; }
+/* Cues already on the track in rekordbox: ours (grey) vs the DJ's (blue). */
+.cue-badge.existing { border-color: var(--line-2); background: var(--surface-3); color: var(--muted); }
+.cue-badge.existing.yours { border-color: #2f5b86; background: rgba(143, 182, 255, .1); color: var(--mid); }
+
+/* Keeping a track's own cues is a per-track choice, so it reads as a switch. */
+.cue-policy-btn { font-size: 10px; padding: 2px 7px; white-space: nowrap; }
+.cue-policy-btn.on { border-color: #2f5b86; color: var(--mid); background: rgba(143, 182, 255, .1); }
+
+.table-head, .track-row {
+  display: grid;
+  /* add · preview · waveform · use · track · bpm · key · energy */
+  grid-template-columns: 26px 24px 24px 40px minmax(0, 1fr) 56px 64px 74px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+}
+.table-head {
+  color: var(--muted); font-size: 9.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .09em;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 7px; padding-top: 5px;
+}
+/* Virtualised pool: rows are absolutely positioned inside a full-height spacer. */
+.tracklist { overflow-y: auto; overflow-x: hidden; flex: 1; position: relative; }
+.pool-spacer { position: relative; width: 100%; }
+.track-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 34px;
+  border-bottom: 1px solid rgba(35, 41, 54, .6);
+  transition: background .1s;
+}
+.track-row:hover { background: var(--surface-3); box-shadow: inset 2px 0 0 var(--line-2); }
+.track-row.in-set {
+  background: linear-gradient(90deg, rgba(76, 198, 240, .13), rgba(76, 198, 240, .02));
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.track-row.in-set:hover { background: linear-gradient(90deg, rgba(76, 198, 240, .2), rgba(76, 198, 240, .05)); }
+.track-row.dim { opacity: .42; }
+.track-row .tt { min-width: 0; }
+.track-row .tt .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.track-row .tt .s {
+  color: var(--muted); font-size: 11px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.track-row .bpm, .track-row .genre {
+  color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11.5px;
+}
+
+.stream-badge {
+  display: inline-block; border-radius: 999px; padding: 0 6px;
+  font-size: 9.5px; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--muted); border: 1px solid var(--line-2); background: var(--surface-2);
+}
+.key-badge {
+  display: inline-block; min-width: 36px; text-align: center;
+  border-radius: 6px; padding: 1px 6px; font-size: 10.5px; font-weight: 650;
+  border: 1px solid var(--line-2); background: var(--surface-2);
+  color: var(--text-2); letter-spacing: .02em;
+}
+
+.length-row { display: flex; align-items: center; gap: 9px; }
+.length-row input[type=range] { flex: 1; min-width: 0; }
+.length-row .energy-input { width: 62px; flex: none; }
+
+/* ------------------------------------------------------------ builder */
+.builder-grid { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 14px; padding: 14px; }
+.controls-card, .curve-card {
+  background: linear-gradient(180deg, var(--surface-3), var(--surface-2));
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 14px;
+  box-shadow: var(--hair);
+}
+.controls-card h3, .curve-card h3 {
+  margin: 0 0 12px; font-size: 10.5px; font-weight: 650;
+  text-transform: uppercase; letter-spacing: .1em; color: var(--text-2);
+}
+.field { display: block; margin-bottom: 11px; }
+.field > span {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+  color: var(--muted); font-size: 11px; margin-bottom: 4px;
+}
+.field output { color: var(--accent); font-variant-numeric: tabular-nums; font-weight: 600; font-size: 11px; }
+.field input[type=range] { width: 100%; }
+.field select, .field input.text-input { width: 100%; }
+.button-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.button-row .btn { flex: 1 1 auto; }
+
+.curve-card { display: flex; flex-direction: column; }
+#curveChart { width: 100%; height: 190px; }
+#curveChart .grid-line { stroke: #212836; stroke-width: 1; stroke-dasharray: 2 5; }
+#curveChart .axis-label { fill: #5f6a7d; font-size: 9.5px; letter-spacing: .04em; }
+#curveChart .target-line {
+  fill: none; stroke: var(--accent); stroke-width: 2.25;
+  stroke-linejoin: round; stroke-linecap: round;
+  filter: drop-shadow(0 0 5px rgba(76, 198, 240, .5));
+}
+#curveChart .actual-line {
+  fill: none; stroke: var(--accent-2); stroke-width: 2;
+  stroke-dasharray: 4 4; stroke-linejoin: round; opacity: .95;
+}
+#curveChart .handle {
+  fill: var(--surface); stroke: var(--accent); stroke-width: 2; cursor: grab;
+  transition: fill .12s;
+  filter: drop-shadow(0 0 4px rgba(76, 198, 240, .55));
+}
+#curveChart .handle:hover { fill: var(--accent); }
+#curveChart .handle:active { cursor: grabbing; }
+#curveChart .dot { fill: var(--accent-2); }
+/* The energy range the pool can reach, drawn behind the target curve. */
+.pool-band { fill: #1e2634; opacity: .8; }
+.pool-label { fill: var(--muted); font-size: 9px; letter-spacing: .04em; }
+
+.stats {
+  display: flex; flex-wrap: wrap; gap: 7px 16px; margin-top: 10px;
+  font-size: 11px; color: var(--muted);
+}
+.stats b { color: var(--text); font-weight: 650; font-variant-numeric: tabular-nums; }
+.warnings { margin-top: 8px; font-size: 11px; color: var(--warn); }
+.warnings div {
+  margin-top: 4px; padding: 5px 9px; border-radius: 6px;
+  background: rgba(255, 196, 107, .08);
+  border-left: 2px solid var(--warn);
+}
+
+/* ------------------------------------------------------------ set list */
+.setlist { overflow: auto; padding: 0 14px 14px; flex: 1; }
+.set-row {
+  display: grid;
+  /* idx · preview · pin · track · set tag · actions */
+  grid-template-columns: 26px 24px 30px minmax(0, 1fr) minmax(0, 124px) auto;
+  align-items: center; gap: 8px;
+  padding: 7px 9px;
+  background: linear-gradient(180deg, var(--surface-3), var(--surface-2));
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  margin-bottom: 5px;
+  cursor: grab;
+  box-shadow: var(--hair);
+  transition: border-color .12s, background .12s, transform .08s var(--ease), opacity .12s;
+}
+.set-row:hover { border-color: var(--line-2); }
+.set-row.locked {
+  border-color: var(--accent-dim);
+  background: linear-gradient(180deg, rgba(76, 198, 240, .12), rgba(76, 198, 240, .03));
+}
+.set-row.dragging { opacity: .35; }
+.set-row.drop-target { border-color: var(--accent); box-shadow: 0 0 0 3px var(--glow); }
+.set-row .idx {
+  color: var(--muted); font-variant-numeric: tabular-nums; text-align: right;
+  font-size: 11px; font-weight: 600;
+}
+.set-row .tt { min-width: 0; }
+.set-row .tt .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.set-row .tt .s { color: var(--muted); font-size: 11px; }
+.set-row .row-actions { display: flex; gap: 4px; }
+/* The tag this track carries in the comment once the set is exported or
+   written -- [E7] [peak] 14/24 -- in the monospace it is written in, so the
+   column reads as data rather than as a label.  124px measures a whole tag for
+   any set up to 99 tracks ([E6] [build] 12/20 is 108px, [E10] [opener] 20/20 is
+   120px); past that the column is the first thing to shrink, and the truncation
+   is the tooltip's job rather than the layout's. */
+.set-row .set-tag {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px; text-align: right; color: var(--accent);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: help;
+}
+/* A track that is in the set twice: one comment cannot carry two tags, so the
+   tag records the last place it sits and the colour says so on every row it
+   appears on rather than quietly disagreeing with the row number. */
+.set-row .set-tag.dup { color: var(--warn); }
+
+.transition-badge {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 11px; color: var(--muted); padding: 2px 7px 5px 45px;
+}
+.transition-badge .dotmark { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.t-perfect .dotmark, .t-adjacent .dotmark, .t-relative .dotmark { background: var(--good); }
+.t-diagonal .dotmark, .t-two-step .dotmark { background: var(--warn); }
+.t-clash .dotmark, .t-unknown .dotmark { background: var(--bad); }
+.t-clash { color: var(--bad); }
+.t-two-step { color: var(--warn); }
+
+/* -------------------------------------------------- library management */
+.manage {
+  position: fixed; left: 12px; bottom: 12px; width: min(720px, 70vw);
+  max-height: 52vh; display: flex; flex-direction: column;
+  background: linear-gradient(180deg, rgba(23, 27, 37, .97), rgba(15, 18, 25, .97));
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-2);
+  z-index: 44;
+  animation: rise .16s var(--ease);
+}
+.manage .pane-head { padding: 10px 13px; gap: 10px; }
+.manage .pane-head .btn { margin-left: auto; }
+.manage-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; padding: 0 13px; }
+.manage-col { min-width: 0; }
+.manage-col h3 {
+  margin: 4px 0 7px; font-size: 10.5px; font-weight: 650;
+  text-transform: uppercase; letter-spacing: .1em; color: var(--text-2);
+}
+.manage-list {
+  overflow-y: auto; max-height: 26vh;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface);
+}
+.manage-row {
+  display: flex; align-items: center; gap: 7px; padding: 5px 9px;
+  border-bottom: 1px solid var(--line); font-size: 12px;
+}
+.manage-row:hover { background: var(--surface-3); }
+.manage-row:last-child { border-bottom: none; }
+.manage-row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.manage-row .num { color: var(--muted); font-variant-numeric: tabular-nums; }
+.manage-row .muted { color: var(--muted); }
+.manage-row input.text-input { min-width: 0; flex: 1; font-size: 12px; padding: 3px 6px; }
+.manage-actions { display: flex; gap: 6px; padding: 8px 0 2px; }
+.manage-note { margin: 9px 13px 11px; font-size: 11px; color: var(--muted); line-height: 1.6; }
+.manage-note b { color: var(--text-2); }
+.manage .bad { color: var(--bad); }
+
+/* ------------------------------------------------------ rename & convert */
+.ingest { width: min(820px, 76vw); max-height: 70vh; }
+.ingest-form { display: grid; gap: 9px; padding: 0 13px; }
+.ingest-form .field { display: grid; gap: 4px; }
+.ingest-form .field > span { font-size: 11px; color: var(--muted); }
+.ingest-form input.text-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+}
+/* The path and its Choose… button read as one control, so the path line stays
+   a single row of the form.  A browser hides the button (see pickFolder). */
+.ingest-form .path-row { display: flex; gap: 6px; align-items: center; }
+.ingest-form .path-row input.text-input { flex: 1; min-width: 0; }
+.ingest-form .pick-btn[hidden] { display: none; }
+.ingest-row { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+.ingest-row .field { min-width: 150px; }
+.ingest-row .pool-toggles { flex: 1; }
+.ingest-actions { align-items: center; padding: 9px 13px 5px; }
+.ingest-actions .muted { margin-left: auto; font-size: 11px; }
+.ingest-report { max-height: 34vh; }
+.ingest-report .path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px; word-break: break-all;
+}
+.ingest-report td.arrow { color: var(--muted); padding: 2px 5px; }
+.ingest-report td.pad { color: var(--warn); white-space: nowrap; }
+.ingest-report td.pad.none { color: var(--muted); }
+
+/* --------------------------------------------------------- cue editor */
+/*
+ * Wider than the other docked panels, because the whole point of it is a
+ * waveform you can read and drop a cue onto: at 720px a six-minute track is a
+ * quarter of a second per pixel.
+ */
+.cue-editor { width: min(1180px, 94vw); max-height: 78vh; }
+.cue-toolbar { display: flex; align-items: center; gap: 14px; padding: 0 13px 9px; flex-wrap: wrap; }
+.cue-control { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.cue-readout {
+  margin-left: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px; color: var(--text); white-space: nowrap;
+}
+.cue-readout.bad { color: var(--bad); }
+.cue-legend { display: flex; gap: 5px; }
+.cue-legend .chip {
+  font-size: 9.5px; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--line-2); color: var(--muted); letter-spacing: .03em;
+}
+/* The three bands, in the colours the canvas draws them (see CUE_BAND_STYLE). */
+.chip.band-low { color: #3fb7f0; border-color: #1f4a6a; }
+.chip.band-mid { color: #4fd07a; border-color: #1f6a45; }
+.chip.band-high { color: #e8edf7; border-color: #3c465c; }
+.chip.zone-in { color: #4fd07a; border-style: dashed; }
+.chip.zone-out { color: #ff8b6b; border-style: dashed; }
+.cue-canvas-wrap { padding: 0 13px; }
+#cueCanvas {
+  display: block; width: 100%; border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: #0b0d12; touch-action: none; cursor: crosshair;
+}
+#cueCanvas.grabbing { cursor: grabbing; }
+#cueCanvas.moving { cursor: ew-resize; }
+.cue-editor .manage-note { margin: 9px 13px 11px; }
+
+/* ------------------------------------------------------------ misc */
+.toast {
+  position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+  background: linear-gradient(180deg, rgba(32, 38, 52, .97), rgba(20, 24, 33, .97));
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  border: 1px solid var(--line-2);
+  border-left: 3px solid var(--accent);
+  padding: 11px 16px; border-radius: var(--r);
+  box-shadow: var(--shadow-2); z-index: 50;
+  max-width: 70vw; font-size: 12px;
+  animation: rise .18s var(--ease);
+}
+.toast.error { border-left-color: var(--bad); }
+
+/* ------------------------------------------------------------ motion */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px) scale(.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes pop {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+/* The toast is centred with a transform, so its own animation has to keep it. */
+.toast { animation: rise-centred .18s var(--ease); }
+@keyframes rise-centred {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    transition-duration: .001ms !important;
+  }
+}
+
+@media (max-width: 1000px) {
+  .layout { grid-template-columns: 1fr; height: auto; }
+  .pane { max-height: 70vh; }
+  .builder-grid { grid-template-columns: 1fr; }
+  .preview { max-width: none; order: 9; width: 100%; }
+  .topbar { flex-wrap: wrap; }
+  .manage { width: calc(100vw - 24px); }
+  .manage-grid { grid-template-columns: 1fr; }
+}

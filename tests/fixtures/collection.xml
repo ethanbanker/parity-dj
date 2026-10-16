@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<DJ_PLAYLISTS Version="1.0.0">
+  <PRODUCT Name="rekordbox" Version="6.8.1" Company="AlphaTheta"/>
+  <COLLECTION Entries="12">
+    <TRACK TrackID="101" Name="Deep Intro" Artist="Marlow" Genre="Deep House" AverageBpm="122.00" Tonality="Am" Rating="153" Comments="E4 warm" TotalTime="372" Location="file://localhost/Users/dj/Music/forge/deep%20intro.mp3" Kind="MP3 File" Size="8912345" TrackNumber="1" Year="2023" Label="Harbour">
+      <TEMPO Inizio="0.023" Bpm="122.00" Metro="4/4" Battito="1"/>
+      <POSITION_MARK Name="" Type="0" Start="32.0" Num="-1"/>
+    </TRACK>
+    <TRACK TrackID="102" Name="Basement" Artist="Kilma" Genre="Tech House" AverageBpm="125.00" Tonality="8A" Rating="204" Comments="" TotalTime="356" Location="file://localhost/Users/dj/Music/forge/basement.mp3" Kind="MP3 File" Size="8123456" TrackNumber="2" Year="2022" Label="Harbour"/>
+    <TRACK TrackID="103" Name="Pressure Valve" Artist="Kilma" Genre="Tech House" AverageBpm="126.00" Tonality="C#m" Rating="204" Comments="energy 7" TotalTime="341" Location="file://localhost/Users/dj/Music/forge/pressure%20valve.mp3" Kind="MP3 File" Size="7891234"/>
+    <TRACK TrackID="104" Name="Night Bus" Artist="Ari Vex" Genre="Progressive House" AverageBpm="124.00" Tonality="9A" Rating="102" Comments="" TotalTime="418" Location="file://localhost/Users/dj/Music/forge/night%20bus.mp3" Kind="MP3 File" Size="9678123"/>
+    <TRACK TrackID="105" Name="Rivet" Artist="Soha" Genre="Techno" AverageBpm="132.00" Tonality="9A" Rating="255" Comments="Energy: 8" TotalTime="402" Location="file://localhost/Users/dj/Music/forge/rivet.mp3" Kind="MP3 File" Size="9234567"/>
+    <TRACK TrackID="106" Name="Cold Room" Artist="Soha" Genre="Techno" AverageBpm="134.00" Tonality="Gm" Rating="255" Comments="" TotalTime="388" Location="file://localhost/Users/dj/Music/forge/cold%20room.mp3" Kind="MP3 File" Size="8987654"/>
+    <TRACK TrackID="107" Name="Signal Drift" Artist="Nils Ou" Genre="Melodic House" AverageBpm="121.00" Tonality="10A" Rating="153" Comments="[7/10]" TotalTime="431" Location="file://localhost/Users/dj/Music/forge/signal%20drift.mp3" Kind="MP3 File" Size="10234567"/>
+    <TRACK TrackID="108" Name="Low Ceiling" Artist="Ferra" Genre="Minimal" AverageBpm="127.00" Tonality="5A" Rating="102" Comments="" TotalTime="333" Location="file://localhost/Users/dj/Music/forge/low%20ceiling.mp3" Kind="MP3 File" Size="7234567"/>
+    <TRACK TrackID="109" Name="Ulterior" Artist="Ferra" Genre="Minimal" AverageBpm="128.00" Tonality="C" Rating="153" Comments="" TotalTime="365" Location="file://localhost/Users/dj/Music/forge/ulterior.mp3" Kind="MP3 File" Size="7734567"/>
+    <TRACK TrackID="110" Name="Peak Hour" Artist="Bosko" Genre="Peak Time Techno" AverageBpm="138.00" Tonality="4A" Rating="255" Comments="banger E9" TotalTime="344" Location="file://localhost/Users/dj/Music/forge/peak%20hour.mp3" Kind="MP3 File" Size="8012345"/>
+    <TRACK TrackID="111" Name="Static Bloom" Artist="Bosko" Genre="Hard Techno" AverageBpm="142.00" Tonality="Fm" Rating="255" Comments="" TotalTime="297" Location="file://localhost/Users/dj/Music/forge/static%20bloom.mp3" Kind="MP3 File" Size="7123456"/>
+    <TRACK TrackID="112" Name="Afterglow" Artist="Ines" Genre="Ambient" AverageBpm="90.00" Tonality="" Rating="0" Comments="" TotalTime="512" Location="file://localhost/Users/dj/Music/forge/afterglow.mp3" Kind="MP3 File" Size="12345678"/>
+  </COLLECTION>
+  <PLAYLISTS>
+    <NODE Type="0" Name="ROOT" Count="4">
+      <NODE Name="Friday Set" Type="1" KeyType="0" Entries="8">
+        <TRACK Key="101"/>
+        <TRACK Key="102"/>
+        <TRACK Key="103"/>
+        <TRACK Key="104"/>
+        <TRACK Key="105"/>
+        <TRACK Key="106"/>
+        <TRACK Key="107"/>
+        <TRACK Key="110"/>
+      </NODE>
+      <NODE Name="Peak material" Type="1" KeyType="0" Entries="4">
+        <TRACK Key="105"/>
+        <TRACK Key="106"/>
+        <TRACK Key="110"/>
+        <TRACK Key="111"/>
+      </NODE>
+      <NODE Name="Folders" Type="0" Count="2">
+        <NODE Name="Warm up" Type="1" KeyType="0" Entries="3">
+          <TRACK Key="101"/>
+          <TRACK Key="104"/>
+          <TRACK Key="107"/>
+        </NODE>
+        <NODE Name="Closers" Type="1" KeyType="0" Entries="2">
+          <TRACK Key="112"/>
+          <TRACK Key="108"/>
+        </NODE>
+      </NODE>
+    </NODE>
+  </PLAYLISTS>
+</DJ_PLAYLISTS>
