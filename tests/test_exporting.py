@@ -94,6 +94,51 @@ def cue_plan(hot=4, memory=True):
     return plan
 
 
+class HtmlPdfTest(unittest.TestCase):
+    def test_html_is_self_contained_and_escaped(self):
+        tracks = [dict(TRACKS[0], title='<script>alert(1)</script>', key="a")]
+        page = exporting.set_to_html(tracks, "Friday & Peak", {"a": "[E4] [opener] 1/1"}).decode("utf-8")
+        self.assertIn("<!DOCTYPE html>", page)
+        self.assertIn("Friday &amp; Peak", page)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", page)
+        self.assertNotIn("<script>alert(1)</script>", page)
+        self.assertIn("[E4] [opener] 1/1", page)
+        self.assertIn("@media print", page)
+        self.assertNotIn("http", page.replace("http-equiv", ""))
+
+    def test_pdf_is_a_real_document_with_the_set_in_it(self):
+        data = exporting.set_to_pdf(TRACKS, "Friday Peak")
+        self.assertTrue(data.startswith(b"%PDF-1.4"))
+        self.assertTrue(data.rstrip().endswith(b"%%EOF"))
+        for marker in (b"/Type /Catalog", b"/Type /Pages", b"/Type /Page ", b"Helvetica-Bold"):
+            self.assertIn(marker, data)
+        self.assertIn(b"Deep Intro", data)
+        self.assertIn(b"Friday Peak", data)
+
+    def test_pdf_xref_offsets_point_at_their_objects(self):
+        data = exporting.set_to_pdf(TRACKS, "Set")
+        start = data.rindex(b"\nxref\n") + 1
+        header, first, *entries = data[start:].split(b"\n")
+        self.assertTrue(header.startswith(b"xref"))
+        self.assertTrue(first.startswith(b"0 "))
+        number = 1
+        for entry in entries:
+            if not entry.endswith(b"n "):
+                continue
+            offset = int(entry[:10])
+            self.assertTrue(
+                data[offset:].startswith(f"{number} 0 obj".encode("ascii")),
+                f"object {number} is not at offset {offset}",
+            )
+            number += 1
+
+    def test_a_long_set_paginates(self):
+        tracks = [dict(TRACKS[0], key=f"k{index}", title=f"Track {index}") for index in range(120)]
+        data = exporting.set_to_pdf(tracks, "Long Set")
+        self.assertGreaterEqual(data.count(b"/Type /Page "), 2)
+        self.assertIn(b"page 2 of", data)
+
+
 class CueInjectionTest(unittest.TestCase):
     def export(self, plans, ids=None, library_xml=LIBRARY_XML):
         fallback = {t["id"]: t for t in TRACKS}

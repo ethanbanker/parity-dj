@@ -30,6 +30,25 @@
       <div class="preview-track"><div id="previewBar" class="preview-bar"></div></div>
     </div>
     <span id="previewTime" class="preview-time">0:00 / 0:00</span>
+    <span id="previewLoopState" class="preview-loop-state" title="No loop set"></span>
+    <div class="preview-loops" title="Loop: set the in and out points at the playhead, then switch the loop on">
+      <button id="loopIn" class="icon-btn" title="Set the loop in point here">⇤</button>
+      <button id="loopOut" class="icon-btn" title="Set the loop out point here">⇥</button>
+      <button id="loopToggle" class="icon-btn loop-toggle" title="Loop on/off (L)">↻</button>
+    </div>
+    <div class="preview-jump" title="Beat jump: move by whole beats using this track's BPM">
+      <button id="jumpBack" class="icon-btn" title="Beat jump back (,)">‹</button>
+      <select id="beatJump" class="mini-select" aria-label="Beats to jump">
+        <option value="1">1</option>
+        <option value="2">2</option>
+        <option value="4" selected>4</option>
+        <option value="8">8</option>
+        <option value="16">16</option>
+        <option value="32">32</option>
+      </select>
+      <button id="jumpFwd" class="icon-btn" title="Beat jump forward (.)">›</button>
+    </div>
+    <button id="previewNext" class="icon-btn" title="Play the next queued track">⏭</button>
     <div class="preview-cues" id="previewCues"></div>
     <button id="previewCuesEdit" class="icon-btn" title="Edit this track's cues on the waveform">〰</button>
     <button id="previewBack" class="icon-btn" title="Back 10 seconds">↺</button>
@@ -47,6 +66,7 @@
       <div class="menu left" id="toolsMenu" hidden>
         <button data-tool="manage">Manage libraries <small>playlists and tracks</small></button>
         <button data-tool="ingest">Rename &amp; convert <small>a folder of downloads</small></button>
+        <button data-tool="watch">Watch folder &amp; M3U <small>import new files as they land</small></button>
       </div>
     </div>
     <span id="libraryStatus" class="status">No library loaded</span>
@@ -55,6 +75,14 @@
     <input id="setName" class="text-input" value="Parity Set" aria-label="Set name">
     <button id="saveSetBtn" class="btn ghost">Save set</button>
     <button id="deleteSetBtn" class="btn ghost" title="Delete the saved set currently loaded (click twice)">Delete</button>
+    <div class="dropdown">
+      <button id="queueBtn" class="btn ghost" title="Tracks queued to play after the current preview">Queue <span id="queueCount" class="pill">0</span></button>
+      <div class="menu" id="queueMenu" hidden>
+        <div class="menu-note">Previewing a track does not queue it: <b>⏭</b> on a row puts it here.</div>
+        <div id="queueList" class="queue-list"></div>
+        <button id="queueClear" class="btn tiny ghost">Clear the queue</button>
+      </div>
+    </div>
     <div class="dropdown">
       <button id="exportBtn" class="btn ghost">Export ▾</button>
       <div class="menu" id="exportMenu" hidden>
@@ -73,6 +101,8 @@
         <button data-format="m3u8">M3U8 <small>any player</small></button>
         <button data-format="csv">CSV <small>spreadsheet</small></button>
         <button data-format="txt">Text set list <small>printable</small></button>
+        <button data-format="html">HTML set list <small>one page, print-friendly</small></button>
+        <button data-format="pdf">PDF set list <small>a page to print or send</small></button>
       </div>
     </div>
     <div class="dropdown">
@@ -151,13 +181,18 @@
       <button id="analyseBtn" class="btn tiny" title="Read rekordbox's phrase analysis and place hot cues A–H">Analyse cues</button>
       <button id="audioEnergyBtn" class="btn tiny"
               title="Measure loudness, brightness, dynamic range and drive in each local file with ffmpeg, and use the result as that track's energy">Measure energy</button>
+      <button id="analyseAudioBtn" class="btn tiny"
+              title="Measure BPM, musical key and a beat grid from each local file — fills in only what the library has no value for">Analyse audio</button>
+      <span id="analysisStatus" class="muted"></span>
+      <button id="duplicatesBtn" class="btn tiny"
+              title="Find the same track listed twice, one file behind two rows, and the same artist and title on different files — then keep one of each">Duplicates</button>
       <span id="cueStatus" class="muted"></span>
       <span id="audioStatus" class="muted"></span>
     </div>
     <div class="table-head">
       <!-- one span per column, in the order the grid declares them:
            add · preview · waveform · use · track · bpm · key · energy -->
-      <span class="c-add"></span><span></span><span></span><span class="c-use">Use</span><span class="c-track">Track</span>
+      <span class="c-add"></span><span></span><span></span><span></span><span></span><span class="c-use">Use</span><span class="c-track">Track</span>
       <span class="c-bpm">BPM</span><span class="c-key">Key</span><span class="c-energy">Energy</span>
     </div>
     <div id="trackList" class="tracklist"></div>
@@ -331,6 +366,51 @@
   <input type="file" id="folderPick" webkitdirectory hidden>
 </section>
 
+<section id="watchPanel" class="manage" hidden>
+  <div class="pane-head">
+    <h2>Watch folder &amp; M3U</h2>
+    <span id="watchStatus" class="muted"></span>
+    <button id="watchClose" class="btn tiny ghost">Close</button>
+  </div>
+  <div class="ingest-form">
+    <div class="field">
+      <span>Folder to watch</span>
+      <div class="path-row">
+        <input id="watchPath" class="text-input" placeholder="/Users/you/Music/incoming"
+               aria-label="Folder to watch">
+        <button id="watchPathPick" class="btn tiny ghost pick-btn"
+                aria-label="Choose the folder to watch" title="Choose the folder to watch">Choose…</button>
+      </div>
+    </div>
+    <div class="ingest-row">
+      <label class="field">
+        <span>Playlist</span>
+        <input id="watchPlaylist" class="text-input" placeholder="Watch: incoming" aria-label="Playlist name">
+      </label>
+      <div class="pool-toggles">
+        <label class="pool-toggle" title="Also read the subfolders of the folder above">
+          <input type="checkbox" id="watchRecursive" checked> Include subfolders
+        </label>
+        <label class="pool-toggle" title="Scan the folder every few seconds and import new audio files into the library">
+          <input type="checkbox" id="watchEnabled"> Watch it
+        </label>
+      </div>
+    </div>
+  </div>
+  <div class="manage-actions ingest-actions">
+    <button id="watchSave" class="btn tiny primary">Save &amp; scan now</button>
+    <button id="watchScan" class="btn tiny">Scan now</button>
+    <span id="watchSummary" class="muted"></span>
+  </div>
+  <div id="watchReport" class="write-report-body ingest-report"></div>
+  <div class="pane-head">
+    <h3>Import an M3U playlist</h3>
+    <span class="muted">adds the tracks it names, and a playlist for them, without duplicating a file the library already has</span>
+    <button id="m3uBtn" class="btn tiny">Choose an .m3u / .m3u8…</button>
+  </div>
+  <input type="file" id="m3uPick" accept=".m3u,.m3u8,audio/x-mpegurl" hidden>
+</section>
+
 <section id="cuePanel" class="manage cue-editor" hidden>
   <div class="pane-head">
     <h2 id="cueTitle">Cue editor</h2>
@@ -378,6 +458,46 @@
     from that point. The band along the bottom is the mix-in and mix-out window, the thin
     lines are 8 bars and the brighter ones 32.
   </p>
+</section>
+
+<section id="duplicatesPanel" class="write-report preflight" hidden>
+  <div class="pane-head">
+    <h2>Duplicates</h2>
+    <span id="duplicatesStatus" class="muted"></span>
+    <button id="duplicatesClose" class="btn tiny ghost">Hide</button>
+  </div>
+  <div id="duplicatesBody" class="write-report-body"></div>
+  <div class="manage-actions">
+    <button id="duplicatesApply" class="btn tiny primary">Remove duplicates</button>
+    <span class="muted">Nothing is deleted: a duplicate in the set is dropped from the set, and a
+      duplicate in the pool is unticked there. The files and the library stay as they are.</span>
+  </div>
+</section>
+
+<section id="metaPanel" class="manage" hidden>
+  <div class="pane-head">
+    <h2>Edit track</h2>
+    <span id="metaStatus" class="muted"></span>
+    <button id="metaClose" class="btn tiny ghost">Close</button>
+  </div>
+  <div class="meta-grid">
+    <label class="field"><span>Title</span><input id="metaTitle" class="text-input"></label>
+    <label class="field"><span>Artist</span><input id="metaArtist" class="text-input"></label>
+    <label class="field"><span>Album</span><input id="metaAlbum" class="text-input"></label>
+    <label class="field"><span>Genre</span><input id="metaGenre" class="text-input"></label>
+    <label class="field"><span>Comment</span><input id="metaComment" class="text-input"></label>
+    <label class="field"><span>Year</span><input id="metaYear" class="energy-input" type="number" min="0" max="9999"></label>
+    <label class="field"><span>Track number</span><input id="metaTrack" class="energy-input" type="number" min="0"></label>
+    <label class="field"><span>BPM</span><input id="metaBpm" class="energy-input" type="number" min="0" max="400" step="0.01"></label>
+    <label class="field"><span>Key</span><input id="metaKey" class="text-input" placeholder="8A, Am, F#m…"></label>
+  </div>
+  <div class="manage-actions">
+    <button id="metaSave" class="btn tiny primary">Save</button>
+    <label class="pool-toggle" title="Also write these fields into the file's own tags with ffmpeg. The audio is copied, not re-encoded.">
+      <input type="checkbox" id="metaWriteTags"> Write tags to the file
+    </label>
+    <span class="muted">Saving without the tick changes only what Parity shows; with it, rekordbox and the other apps see the change after a tag reload.</span>
+  </div>
 </section>
 
 <section id="preflightPanel" class="write-report preflight" hidden>

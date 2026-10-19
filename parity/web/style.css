@@ -202,10 +202,11 @@ html.shell-app { --shell-lead: 74px; }
 
 /* ------------------------------------------------- preview (topbar player) */
 .preview {
-  display: flex; align-items: center; gap: 9px; min-width: 0; max-width: 42vw;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 5px 9px; min-width: 0;
+  max-width: 56vw;
   background: linear-gradient(180deg, var(--surface-3), var(--surface-2));
   border: 1px solid var(--accent-dim);
-  border-radius: 999px; padding: 4px 12px 4px 5px;
+  border-radius: 16px; padding: 4px 12px 4px 5px;
   box-shadow: 0 0 0 1px rgba(76, 198, 240, .06), 0 8px 24px -16px rgba(76, 198, 240, .5);
 }
 .preview-play {
@@ -214,7 +215,7 @@ html.shell-app { --shell-lead: 74px; }
   color: var(--accent-ink); font-size: 11px; text-align: center;
   border: 0; box-shadow: 0 3px 10px -3px rgba(76, 198, 240, .7);
 }
-.preview-body { min-width: 0; flex: 1; }
+.preview-body { min-width: 0; flex: 1 1 130px; }
 .preview-title {
   font-size: 11px; font-weight: 500;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -232,6 +233,26 @@ html.shell-app { --shell-lead: 74px; }
   font-variant-numeric: tabular-nums; white-space: nowrap;
 }
 .preview-cues { display: flex; align-items: center; gap: 3px; flex: none; }
+.preview-loops, .preview-jump { display: flex; align-items: center; gap: 2px; flex: none; }
+.preview-jump .mini-select { padding: 1px 3px; font-size: 10px; }
+.preview-loop-state {
+  font-size: 9.5px; color: var(--muted); white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.preview-loop-state.on { color: var(--accent); }
+.loop-toggle.on { border-color: var(--accent); color: var(--accent); background: var(--glow); }
+.queue-list { max-height: 260px; overflow-y: auto; min-width: 250px; }
+.queue-row {
+  display: grid; grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center; gap: 7px; padding: 5px 8px;
+  border-bottom: 1px solid var(--line); cursor: pointer;
+}
+.queue-row:hover { background: var(--surface-3); }
+.queue-row .num { color: var(--muted); font-size: 10px; text-align: right; }
+.queue-row .tt { min-width: 0; }
+.queue-row .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11.5px; }
+.queue-row .s { color: var(--muted); font-size: 10px; }
+.queue-empty { color: var(--muted); font-size: 11px; padding: 8px; }
 .preview-error { color: var(--bad); }
 
 /* One pad per hot cue, in rekordbox's own colours. */
@@ -610,8 +631,8 @@ input[type="range"]::-moz-range-thumb {
 
 .table-head, .track-row {
   display: grid;
-  /* add · preview · waveform · use · track · bpm · key · energy */
-  grid-template-columns: 26px 24px 24px 40px minmax(0, 1fr) 56px 64px 74px;
+  /* add · preview · waveform · edit · queue · use · track · bpm · key · energy */
+  grid-template-columns: 26px 24px 24px 24px 24px 40px minmax(0, 1fr) 56px 64px 74px;
   align-items: center;
   gap: 6px;
   padding: 0 14px;
@@ -646,8 +667,22 @@ input[type="range"]::-moz-range-thumb {
   color: var(--muted); font-size: 11px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.meta-grid {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0 14px; padding: 4px 14px 8px;
+}
+.meta-grid .field { margin-bottom: 9px; }
+.meta-grid .text-input, .meta-grid .energy-input { width: 100%; }
+
 .track-row .bpm, .track-row .genre {
   color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11.5px;
+}
+
+.analysis-badge {
+  display: inline-block; margin-left: 5px; border-radius: 999px; padding: 0 5px;
+  font-size: 9px; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--accent); border: 1px solid var(--accent-dim);
+  background: rgba(76, 198, 240, .08);
 }
 
 .stream-badge {

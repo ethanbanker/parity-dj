@@ -174,6 +174,76 @@ class StreamingTest(unittest.TestCase):
         self.assertFalse(local["streaming"])
 
 
+#: A real encrypted streaming name, as rekordbox 7 writes it into master.db.
+LOCKED_TITLE = "$A7:v1:PDHdijBIBsu1CSnE7Edt5g==:L89UTZ4YMWvHjboAFGhA5A=="
+LOCKED_ARTIST = "$A7:v1:tDdgm1yDnW+JT+gJNB5wnQ==:7M9kOmgGGZBq1ZDHhX7OejeXLs8JnOxIYDo+z/ym+mI="
+SPOTIFY = "file://localhostspotify:track:5ZcmUzUzeuYnMjHYQXyHSz"
+
+
+class EncryptedMetadataTest(unittest.TestCase):
+    """rekordbox encrypts streaming names; ciphertext is not a track title.
+
+    The database holds no key for these values, so the honest display is the
+    service and the track id -- two rows stay tellable apart, and neither shows
+    a base64 blob in the pool.
+    """
+
+    def test_the_ciphertext_shape_is_recognised(self):
+        self.assertTrue(rekordbox.is_encrypted_metadata(LOCKED_TITLE))
+        self.assertTrue(rekordbox.is_encrypted_metadata("  " + LOCKED_ARTIST + "  "))
+
+    def test_ordinary_values_are_left_alone(self):
+        for value in ("", None, "Slow Burn", "$100", "$A7 is not a name", "A7:v1:x:y"):
+            self.assertFalse(rekordbox.is_encrypted_metadata(value), value)
+
+    def test_a_constructed_track_shows_the_service_and_id(self):
+        track = rekordbox.Track(
+            track_id="225299001",
+            location=SPOTIFY,
+            title=LOCKED_TITLE,
+            artist=LOCKED_ARTIST,
+            album=LOCKED_ARTIST,
+        )
+        self.assertEqual(track.title, "Spotify track 5ZcmUzUzeuYnMjHYQXyHSz")
+        self.assertEqual(track.artist, "")
+        self.assertEqual(track.album, "")
+        self.assertTrue(track.metadata_locked)
+        self.assertNotIn("$A7", track.display)
+        self.assertTrue(track.to_dict()["metadata_locked"])
+
+    def test_an_unreadable_row_without_a_service_still_has_a_name(self):
+        track = rekordbox.Track(track_id="7", title=LOCKED_TITLE)
+        self.assertEqual(track.title, "Streaming track 7")
+        self.assertTrue(track.metadata_locked)
+
+    def test_scrubbing_is_idempotent_and_keeps_plain_fields(self):
+        record = {
+            "id": "2",
+            "location": "soundcloud:tracks:862894612",
+            "title": LOCKED_TITLE,
+            "artist": LOCKED_ARTIST,
+            "genre": "House",
+        }
+        self.assertTrue(rekordbox.scrub_metadata(record))
+        self.assertEqual(record["title"], "SoundCloud track 862894612")
+        self.assertEqual(record["artist"], "")
+        self.assertEqual(record["genre"], "House")
+        self.assertTrue(record["metadata_locked"])
+        self.assertFalse(rekordbox.scrub_metadata(record))
+
+    def test_an_xml_export_with_encrypted_names_is_cleaned_on_the_way_in(self):
+        xml = f"""<?xml version="1.0"?>
+<DJ_PLAYLISTS Version="1.0.0"><COLLECTION Entries="1">
+  <TRACK TrackID="1" Name="{LOCKED_TITLE}" Artist="{LOCKED_ARTIST}"
+         AverageBpm="124.00" TotalTime="200" Location="{SPOTIFY}" Kind="Unknown"/>
+</COLLECTION></DJ_PLAYLISTS>"""
+        track = rekordbox.parse_collection(xml).tracks["1"]
+        self.assertEqual(track.title, "Spotify track 5ZcmUzUzeuYnMjHYQXyHSz")
+        self.assertEqual(track.artist, "")
+        self.assertTrue(track.metadata_locked)
+        self.assertTrue(track.is_streaming)
+
+
 class BadInputTest(unittest.TestCase):
     def test_non_xml_raises(self):
         with self.assertRaises(Exception):

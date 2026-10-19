@@ -7,6 +7,7 @@ rekordbox XML is kept alongside it so exports can reproduce tracks losslessly.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -69,6 +70,9 @@ class Store:
             # same reason: reading a track's file costs an ffmpeg decode, and
             # the cue editor wants the picture the moment it opens.
             "waveforms": {},
+            # Tempo, key and beat grid measured from the audio
+            # (parity.analysis), kept beside the library like the energy.
+            "track_analysis": {},
             "cue_plans": {},
             "sets": [],
             "stale_cue_plans": 0,
@@ -79,6 +83,9 @@ class Store:
             # Where the last ingest run read from and wrote to, so the folder
             # panel opens where the user left it (see :mod:`parity.ingest`).
             "ingest": {},
+            # The watch folder (parity.watchfolder): where it is, whether it is
+            # on, and which files it has already imported.
+            "watch": {},
         }
 
     def _migrate_library(self) -> None:
@@ -90,13 +97,31 @@ class Store:
         existing library picks them up without the user re-importing anything.
         """
         library = self._data.get("library")
-        if not library or library.get("schema", 1) >= LIBRARY_SCHEMA:
+        if not library:
+            return
+        # Runs regardless of the schema version: a library imported before the
+        # streaming-name check existed is repaired in place, which preserves
+        # edits the user made rather than re-importing over them.
+        if self._scrub_encrypted_metadata(library):
+            self.library_version += 1
+            self.save()
+        if library.get("schema", 1) >= LIBRARY_SCHEMA:
             return
         if library.get("source_kind") == "db":
             if self.refresh_library_from_db():
                 return
         if self.library_xml_path.exists():
             self.refresh_library_from_xml()
+
+    def _scrub_encrypted_metadata(self, library: dict) -> bool:
+        """Replace rekordbox-encrypted streaming names in stored records."""
+        from . import rekordbox as rb
+
+        changed = False
+        for record in (library.get("tracks") or {}).values():
+            if isinstance(record, dict) and rb.scrub_metadata(record):
+                changed = True
+        return changed
 
     def _load(self) -> dict:
         if not self.path.exists():
@@ -192,6 +217,9 @@ class Store:
             }
             self._data["waveforms"] = {
                 k: v for k, v in (self._data.get("waveforms") or {}).items() if k in valid
+            }
+            self._data["track_analysis"] = {
+                k: v for k, v in (self._data.get("track_analysis") or {}).items() if k in valid
             }
             self.save()
 
@@ -335,6 +363,121 @@ class Store:
             self._data["cue_overrides"] = {}
             self.save()
 
+    # -------------------------------------------------- imported tracks
+
+    def add_tracks(
+        self,
+        records: dict[str, dict],
+        *,
+        playlist_name: str = "",
+        track_ids: list[str] | None = None,
+        source: str = "",
+        append_playlist: bool = False,
+    ) -> dict:
+        """Add imported tracks and a playlist to the stored library.
+
+        Used by the M3U import and the watch folder, which can be the *first*
+        thing a library comes from.  Existing tracks are not touched: the
+        caller has already matched them by path, and an M3U import must not
+        overwrite what rekordbox said about a track.  A playlist with the same
+        name is updated in place (a re-import replaces its order) rather than
+        stacked beside the old one.
+        """
+        with self._lock:
+            records = {str(tid): record for tid, record in (records or {}).items()}
+            library = self._data.get("library")
+            if not library:
+                library = {
+                    "schema": LIBRARY_SCHEMA,
+                    "source_kind": "files",
+                    "imported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "source": source or "imported playlist",
+                    "product": {},
+                    "track_count": 0,
+                    "tracks": {},
+                    "playlists": [],
+                }
+                self._data["library"] = library
+            tracks = library.setdefault("tracks", {})
+            tracks.update(records)
+            library["track_count"] = len(tracks)
+            if source and not library.get("source"):
+                library["source"] = source
+
+            ids = [str(tid) for tid in (track_ids or []) if str(tid) in tracks]
+            playlist = None
+            if playlist_name:
+                node = {
+                    "id": "pl:" + hashlib.sha1(playlist_name.encode("utf-8")).hexdigest()[:12],
+                    "name": playlist_name,
+                    "count": len(ids),
+                    "total": len(ids),
+                    "is_folder": False,
+                    "track_ids": ids,
+                    "children": [],
+                }
+                playlists = library.setdefault("playlists", [])
+                existing = next(
+                    (item for item in playlists if item.get("name") == playlist_name), None
+                )
+                if existing is None:
+                    playlists.append(node)
+                    existing = node
+                elif append_playlist:
+                    # The watch folder adds to its playlist as new files land;
+                    # an M3U re-import replaces the order it describes.
+                    merged = list(dict.fromkeys(list(existing.get("track_ids") or []) + ids))
+                    existing["track_ids"] = merged
+                    existing["count"] = len(merged)
+                    existing["total"] = len(merged)
+                else:
+                    existing.update(node)
+                playlist = existing
+            self.library_version += 1
+            self.save()
+            return {
+                "added": len(records),
+                "track_count": len(tracks),
+                "playlist": dict(playlist) if playlist else None,
+                "ids": ids,
+            }
+
+    # ------------------------------------------------------------ metadata
+
+    #: Fields an edit may change on a stored library record.  The shape follows
+    #: the record itself (``comments`` / ``tonality``), not the editor's labels.
+    EDITABLE_FIELDS = {
+        "title", "artist", "album", "genre", "comments",
+        "year", "track_number", "bpm", "tonality",
+    }
+
+    def update_tracks(self, updates: dict[str, dict]) -> int:
+        """Apply metadata edits to stored records, by track key.
+
+        The library record is Parity's copy of what the DJ app said; changing it
+        here changes what the pool shows and what an export writes.  A key that
+        is not in the loaded library is skipped, so a stale editor panel cannot
+        invent a track.
+        """
+        with self._lock:
+            library = self._data.get("library") or {}
+            records = library.get("tracks") or {}
+            by_key = {record.get("key"): record for record in records.values()}
+            changed = 0
+            for key, fields in (updates or {}).items():
+                record = by_key.get(str(key))
+                if record is None:
+                    continue
+                for name, value in (fields or {}).items():
+                    if name not in self.EDITABLE_FIELDS:
+                        continue
+                    record[name] = value
+                changed += 1
+            if changed:
+                self.library_version += 1
+                self.save()
+            return changed
+
     # ------------------------------------------------------------- energy
 
     def overrides(self) -> dict[str, float]:
@@ -362,6 +505,28 @@ class Store:
         with self._lock:
             self.library_version += 1
             self._data["audio_analysis"] = {}
+            self.save()
+
+    # ------------------------------------------------------ tempo / key
+
+    def track_analysis(self) -> dict[str, dict]:
+        """Measured BPM, key and beat grid by track key (parity.analysis)."""
+        with self._lock:
+            return dict(self._data.get("track_analysis") or {})
+
+    def set_track_analysis(self, entries: dict[str, dict], replace: bool = False) -> int:
+        with self._lock:
+            self.library_version += 1
+            current = {} if replace else dict(self._data.get("track_analysis") or {})
+            current.update({str(k): v for k, v in entries.items()})
+            self._data["track_analysis"] = current
+            self.save()
+            return len(current)
+
+    def clear_track_analysis(self) -> None:
+        with self._lock:
+            self.library_version += 1
+            self._data["track_analysis"] = {}
             self.save()
 
     # ----------------------------------------------------------- waveforms
@@ -449,6 +614,33 @@ class Store:
                 else:
                     saved[key] = value
             self._data["ingest"] = saved
+            self.save()
+            return dict(saved)
+
+    # --------------------------------------------------------------- watch
+
+    WATCH_KEYS = {
+        "path", "enabled", "recursive", "playlist", "interval",
+        "seen", "last_scan", "last_added", "last_error",
+    }
+
+    def watch_settings(self) -> dict:
+        with self._lock:
+            return dict(self._data.get("watch") or {})
+
+    def set_watch_settings(self, values: dict) -> dict:
+        with self._lock:
+            saved = dict(self._data.get("watch") or {})
+            for key, value in (values or {}).items():
+                if key not in self.WATCH_KEYS:
+                    continue
+                if key == "seen":
+                    saved["seen"] = sorted({str(path) for path in (value or [])})
+                elif value is None or value == "":
+                    saved.pop(key, None)
+                else:
+                    saved[key] = value
+            self._data["watch"] = saved
             self.save()
             return dict(saved)
 

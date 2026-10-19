@@ -178,6 +178,23 @@ class LibraryConversionTest(unittest.TestCase):
         self.assertIn("cues", data)
         self.assertFalse(data["streaming"])
 
+    def test_encrypted_streaming_names_become_the_service_and_id(self):
+        locked = content(
+            "3",
+            "spotify:track:5ZcmUzUzeuYnMjHYQXyHSz",
+            title="$A7:v1:PDHdijBIBsu1CSnE7Edt5g==:L89UTZ4YMWvHjboAFGhA5A==",
+            artist="$A7:v1:tDdgm1yDnW+JT+gJNB5wnQ==:7M9kOmgGGZBq1ZDHhX7OejeXLs8JnOxIYDo+z/ym+mI=",
+            file_type=19,
+            analysed=0,
+            analysis_path="",
+        )
+        library = rxdb._library_from_db(FakeDb([locked]), source="s", product={})
+        track = library.tracks["3"]
+        self.assertEqual(track.title, "Spotify track 5ZcmUzUzeuYnMjHYQXyHSz")
+        self.assertEqual(track.artist, "")
+        self.assertTrue(track.metadata_locked)
+        self.assertNotIn("$A7", track.display)
+
 
 class PlaylistTreeTest(unittest.TestCase):
     def test_folders_and_playlists_are_nested(self):

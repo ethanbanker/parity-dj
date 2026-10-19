@@ -19,19 +19,23 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import (
+    analysis as analysis_mod,
     audio as audio_mod,
     autopilot,
     builder,
     camelot,
+    duplicates as duplicates_mod,
     energy as energy_mod,
     exporting,
     ingest as ingest_mod,
+    metadata as metadata_mod,
     poolfilter,
     preflight as preflight_mod,
     rekordbox,
     rxdb,
     structure as structure_mod,
     tags as tags_mod,
+    watchfolder,
     waveform as waveform_mod,
     writedb,
 )
@@ -195,11 +199,29 @@ class Api:
         self._views: dict[str, dict] = {}
         self._views_version = -1
         self._cue_plans: dict[str, dict] = {}
+        self._analysis: dict[str, dict] = {}
+        self._analysis_version = -1
+        # Background watch-folder thread (see parity.watchfolder); None until
+        # the feature is switched on.
+        self._watch_thread = None
+        self._watch_stop = threading.Event()
 
     # ---------------------------------------------------------- conversion
 
+    def _analyses(self) -> dict[str, dict]:
+        """Measured tempo/key/grid, memoised until the store changes."""
+        if self._analysis_version != self.store.library_version:
+            self._analysis = self.store.track_analysis()
+            self._analysis_version = self.store.library_version
+        return self._analysis
+
     def track_from_record(self, record: dict) -> rekordbox.Track:
-        """Rebuild the parser's track object from a stored record."""
+        """Rebuild the parser's track object from a stored record.
+
+        Where the library has no BPM or key, the values measured from the audio
+        fill in, so every consumer -- the energy estimate, the cue fallback,
+        the exported tempo, the builder -- sees the same numbers as the pool.
+        """
         track = rekordbox.Track(track_id=str(record.get("id", "")))
         track.title = record.get("title", "")
         track.artist = record.get("artist", "")
@@ -212,6 +234,12 @@ class Api:
         track.rating = int(record.get("rating") or 0)
         track.analysed = bool(record.get("analysed"))
         track.analysis_path = record.get("analysis_path", "") or ""
+        measured = self._analyses().get(record.get("key", "")) or {}
+        if not track.bpm and measured.get("bpm"):
+            track.bpm = float(measured["bpm"])
+        if not track.tonality and measured.get("key"):
+            track.tonality = str(measured["key"])
+        track.sanitize_metadata()
         return track
 
     # ------------------------------------------------------------- helpers
@@ -236,7 +264,8 @@ class Api:
         estimate = energy_mod.estimate(
             track, override, (measured or {}).get("energy")
         )
-        code = camelot.parse_key(record.get("tonality"))
+        code = camelot.parse_key(track.tonality)
+        analysed = self._analyses().get(key) or None
         plan = self._cue_plans.get(key) or {}
         hot = plan.get("hot_cues") or []
         memory = plan.get("memory_cues") or []
@@ -250,6 +279,16 @@ class Api:
                 "stars": record.get("stars", track.stars),
                 "camelot": code,
                 "musical_key": camelot.CAMELOT_TO_KEY.get(code) if code else None,
+                # What the audio said, and whether it is what the pool shows.
+                "analysis": analysed,
+                "analysed_bpm": (analysed or {}).get("bpm"),
+                "analysed_key": (analysed or {}).get("camelot"),
+                "key_source": "library" if record.get("tonality") else (
+                    "analysed" if code else ""
+                ),
+                "bpm_source": "library" if record.get("bpm") else (
+                    "analysed" if track.bpm else ""
+                ),
                 "energy": estimate.value,
                 "energy_source": estimate.source,
                 "energy_confidence": estimate.confidence,
@@ -260,6 +299,7 @@ class Api:
                 "audio": measured,
                 "needs_review": estimate.needs_review,
                 "streaming": bool(record.get("streaming")),
+                "metadata_locked": bool(record.get("metadata_locked")),
                 "label": track.display,
                 "cues": {
                     "hot": len(hot),
@@ -370,6 +410,8 @@ class Api:
             "energy_overrides": len(overrides),
             "low_confidence_energy": low_confidence,
             "audio": self.audio_status() if library else {"available": audio_mod.status()["available"]},
+            "analysis": self.analysis_status(),
+            "watch": watchfolder.status(self.store),
             "cue_policy": policy,
             "cue_override_count": len(track_policies),
             "tracks_with_user_cues": with_user_cues,
@@ -421,6 +463,46 @@ class Api:
             tracks = list(views.values())
             tracks.sort(key=lambda t: (t.get("artist") or "", t.get("title") or ""))
         return {"tracks": tracks, "count": len(tracks)}
+
+    def edit_track(self, payload: dict | None = None) -> dict:
+        """Change one track's metadata, in the library record and optionally
+        in the file's own tags.
+
+        The order matters: the file is written first, so a file that cannot be
+        written leaves the library record alone rather than disagreeing with the
+        tags on disk.  ``write_tags`` is off unless asked -- editing what the
+        pool shows is reversible, rewriting a music file is not.
+        """
+        payload = payload or {}
+        key = str(payload.get("key") or "")
+        if not key:
+            raise ValueError("No track requested.")
+        record = self.store.tracks_by_key().get(key)
+        if record is None:
+            raise ValueError("That track is not in the loaded library.")
+        fields = metadata_mod.normalise(payload.get("fields") or {})
+        written = None
+        if payload.get("write_tags"):
+            path = str(record.get("path") or "")
+            if record.get("streaming") or not path:
+                raise ValueError(
+                    "That track is streaming only - there is no local file to tag."
+                )
+            written = metadata_mod.write_tags(path, fields)
+        changed = self.store.update_tracks({key: fields})
+        LOG.info(
+            "metadata %s: %s%s",
+            record.get("label") or record.get("title") or key,
+            ", ".join(f"{name}={value!r}" for name, value in sorted(fields.items())),
+            " (written to the file)" if written else " (library only)",
+        )
+        return {
+            "ok": True,
+            "changed": fields,
+            "records": changed,
+            "tags": written,
+            "track": self.all_views().get(key),
+        }
 
     def set_energy(self, payload: dict) -> dict:
         values = payload.get("values") or {}
@@ -527,6 +609,7 @@ class Api:
         duration_ms = int(structure.get("duration_ms") or 0)
         if not duration_ms:
             duration_ms = int(round(float(record.get("duration") or 0) * 1000))
+        measured = self._analyses().get(key) or {}
         return {
             "key": key,
             "hot_cues": [
@@ -551,8 +634,9 @@ class Api:
             "source": structure.get("source", ""),
             "note": plan.get("note", ""),
             "planner": plan.get("planner"),
-            "bpm": structure.get("bpm") or float(record.get("bpm") or 0),
-            "first_beat_ms": int(structure.get("first_beat_ms") or 0),
+            "bpm": structure.get("bpm") or float(record.get("bpm") or 0)
+            or float(measured.get("bpm") or 0),
+            "first_beat_ms": int(structure.get("first_beat_ms") or measured.get("first_beat_ms") or 0),
             "beats": int(structure.get("beats") or 0),
             "duration_ms": duration_ms,
             "phrases": [
@@ -750,6 +834,17 @@ class Api:
                     "metro": "4/4",
                     "battito": 1,
                 }
+            elif (self._analyses().get(key) or {}).get("bpm"):
+                # No cue plan, but the audio has been measured: the exported
+                # track can still arrive beat-gridded.
+                measured = self._analyses()[key]
+                grid = {
+                    "inizio": (measured.get("first_beat_ms") or 0) / 1000.0,
+                    "bpm": measured["bpm"],
+                    "metro": "4/4",
+                    "battito": 1,
+                    "source": "analysed",
+                }
             if honour_policy and cue_policy_for(key, policy, overrides) == "keep":
                 if existing_cue_summary(existing)["user"]:
                     # Under "keep" the DJ's own cues stay and ours are left out --
@@ -770,6 +865,30 @@ class Api:
                 plan["beat_grid"] = grid
             if plan:
                 plans[key] = plan
+        return plans
+
+    def beat_grids(self, keys: list[str]) -> dict[str, dict]:
+        """Grid-only plans for the tracks that have been measured.
+
+        Used when an export carries no cues: the cue toggle should not also turn
+        off the tempo marker, since a beat grid is what rekordbox needs to place
+        the track on the beat even when Parity is not providing cues.
+        """
+        plans: dict[str, dict] = {}
+        analyses = self._analyses()
+        for key in keys:
+            measured = analyses.get(key) or {}
+            if not measured.get("bpm"):
+                continue
+            plans[key] = {
+                "beat_grid": {
+                    "inizio": (measured.get("first_beat_ms") or 0) / 1000.0,
+                    "bpm": measured["bpm"],
+                    "metro": "4/4",
+                    "battito": 1,
+                    "source": "analysed",
+                }
+            }
         return plans
 
     def analyse(self, payload: dict | None = None) -> dict:
@@ -1107,6 +1226,240 @@ class Api:
             "status": self.audio_status(),
         }
 
+    # -------------------------------------------- playlists & watch folder
+
+    def import_m3u(self, payload: dict | None = None) -> dict:
+        """Import an M3U/M3U8 as a playlist, adding any tracks it names.
+
+        A path is used when the app has one (the Mac shell, a script); a
+        dropped file arrives as text, with absolute paths or a ``base`` folder
+        for the relative ones.
+        """
+        payload = payload or {}
+        path = str(payload.get("path") or "").strip()
+        try:
+            if path:
+                report = watchfolder.import_m3u(self.store, path=path)
+            else:
+                text = str(payload.get("text") or "")
+                if not text.strip():
+                    raise ValueError("No playlist supplied.")
+                report = watchfolder.import_m3u(
+                    self.store,
+                    text=text,
+                    name=str(payload.get("name") or ""),
+                    base_dir=str(payload.get("base") or ""),
+                )
+        except watchfolder.PlaylistError as exc:
+            raise ValueError(str(exc)) from exc
+        LOG.info(
+            "M3U import %r: %d entries, %d new, %d matched, %d missing",
+            report["playlist"], report["entries"], report["added"],
+            report["matched"], len(report["missing"]),
+        )
+        return {"ok": True, **report, "state": self.state()}
+
+    def watch_status(self) -> dict:
+        status = watchfolder.status(self.store)
+        status["running"] = bool(self._watch_thread and self._watch_thread.is_alive())
+        # What the playlist currently holds, so the panel can say whether the
+        # import is landing somewhere the pool can see.
+        library = self.store.library() or {}
+        name = status.get("playlist") or ""
+        playlist = next(
+            (node for node in library.get("playlists") or [] if node.get("name") == name),
+            None,
+        )
+        status["playlist_count"] = (playlist or {}).get("count", 0)
+        status["m3u"] = "Import an .m3u or .m3u8 file as a playlist."
+        return status
+
+    def watch_configure(self, payload: dict | None = None) -> dict:
+        """Save the watch folder and run one pass so the choice has a result."""
+        payload = payload or {}
+        try:
+            watchfolder.configure(self.store, payload)
+        except watchfolder.PlaylistError as exc:
+            raise ValueError(str(exc)) from exc
+        settings = self.store.watch_settings()
+        report = None
+        if settings.get("enabled"):
+            report = watchfolder.scan(self.store)
+            self._start_watch()
+        else:
+            self._stop_watch()
+        return {"settings": settings, "report": report, "status": self.watch_status(), "state": self.state()}
+
+    def watch_tick(self) -> dict:
+        """Scan once, now, whether or not the timer is on."""
+        report = watchfolder.scan(self.store)
+        return {"report": report, "status": self.watch_status(), "state": self.state()}
+
+    def _start_watch(self) -> None:
+        """Start the background scanner if it is not already running."""
+        if self._watch_thread and self._watch_thread.is_alive():
+            return
+        self._watch_stop.clear()
+
+        def loop() -> None:
+            while not self._watch_stop.is_set():
+                interval = float(self.store.watch_settings().get("interval") or 5.0)
+                if self._watch_stop.wait(max(3.0, interval)):
+                    break
+                if not self.store.watch_settings().get("enabled"):
+                    continue
+                try:
+                    report = watchfolder.scan(self.store)
+                    if report.get("added"):
+                        LOG.info("watch folder imported %d new track(s)", report["added"])
+                except Exception as exc:  # noqa: BLE001 - the next tick may succeed
+                    LOG.warning("watch folder scan failed: %s", exc)
+                    self.store.set_watch_settings({"last_error": str(exc)})
+
+        self._watch_thread = threading.Thread(target=loop, name="parity-watch", daemon=True)
+        self._watch_thread.start()
+
+    def _stop_watch(self) -> None:
+        self._watch_stop.set()
+        self._watch_thread = None
+
+    # --------------------------------------------------- tempo / key / grid
+
+    def analysis_status(self) -> dict:
+        """What the tempo/key analysis can do here, and how much it has done."""
+        status = analysis_mod.status()
+        stored = self.store.track_analysis()
+        records = self.store.tracks_by_key()
+        local = [key for key, record in records.items() if not record.get("streaming")]
+        current = [
+            key
+            for key in local
+            if int((stored.get(key) or {}).get("model", 0)) == analysis_mod.MODEL_VERSION
+        ]
+        status.update(
+            {
+                "analysed": len(current),
+                "local": len(local),
+                "stale": len(stored) - len(current),
+                "with_features": len(stored),
+            }
+        )
+        views = self.all_views()
+        status["using_bpm"] = sum(1 for view in views.values() if view.get("bpm_source") == "analysed")
+        status["using_key"] = sum(1 for view in views.values() if view.get("key_source") == "analysed")
+        return status
+
+    def analyse_track_audio(self, payload: dict | None = None) -> dict:
+        """Measure BPM, key and a beat grid for the tracks in play.
+
+        Cached by file (path, size, mtime) and model, like the energy run, so a
+        second press is instant and only changed files are decoded again.  A
+        track the library already describes keeps its own BPM and key: this
+        fills what is missing rather than second-guessing rekordbox.
+        """
+        payload = payload or {}
+        views = self.all_views()
+        if payload.get("filter"):
+            config = poolfilter.FilterConfig.from_dict(payload["filter"])
+            keys = [view["key"] for view in self._filter(config).kept]
+        elif payload.get("keys"):
+            keys = [key for key in payload["keys"] if key in views]
+        else:
+            keys = list(views.keys())
+        if payload.get("local_only", True):
+            keys = [key for key in keys if not views[key].get("streaming")]
+        limit = int(payload.get("limit") or 0)
+
+        stored = self.store.track_analysis()
+        records = self.store.tracks_by_key()
+        force = bool(payload.get("force"))
+        entries: dict[str, dict] = {}
+        results: list[dict] = []
+        skipped: list[dict] = []
+        cached_keys: list[str] = []
+        started = time.perf_counter()
+
+        for key in keys:
+            if limit > 0 and len(results) + len(skipped) >= limit:
+                break
+            record = records.get(key) or {}
+            label = views[key].get("label", "")
+            try:
+                path = self.audio_path(key)
+            except ValueError as exc:
+                skipped.append({"key": key, "label": label, "reason": str(exc)})
+                continue
+            stat = path.stat()
+            previous = stored.get(key) or {}
+            if (
+                not force
+                and int(previous.get("model", 0)) == analysis_mod.MODEL_VERSION
+                and previous.get("mtime") == stat.st_mtime
+                and previous.get("size") == stat.st_size
+            ):
+                cached_keys.append(key)
+                continue
+
+            track_started = time.perf_counter()
+            try:
+                measured = analysis_mod.analyse(path)
+            except analysis_mod.AnalysisUnavailable as exc:
+                skipped.append({"key": key, "label": label, "reason": str(exc)})
+                continue
+            entry = measured.to_dict()
+            entry.update({"mtime": stat.st_mtime, "size": stat.st_size, "path": str(path)})
+            entries[key] = entry
+            elapsed_ms = (time.perf_counter() - track_started) * 1000
+            AUDIO_LOG.info(
+                "%s | %.2f BPM (%s) | %s %s | first beat %d ms | %.1fs of audio in %.0f ms",
+                label,
+                entry["bpm"],
+                entry["bpm_confidence"],
+                entry["key"] or "?",
+                entry["camelot"] or "?",
+                entry["first_beat_ms"],
+                entry["seconds"],
+                elapsed_ms,
+            )
+            results.append(
+                {
+                    "key": key,
+                    "label": label,
+                    "bpm": entry["bpm"],
+                    "bpm_confidence": entry["bpm_confidence"],
+                    "key": entry["key"],
+                    "camelot": entry["camelot"],
+                    "key_confidence": entry["key_confidence"],
+                    "first_beat_ms": entry["first_beat_ms"],
+                    "interval_ms": entry["interval_ms"],
+                    "beats": entry["beats"],
+                    "note": entry["note"],
+                    "ms": round(elapsed_ms, 1),
+                }
+            )
+
+        dry_run = bool(payload.get("dry_run"))
+        if entries and not dry_run:
+            self.store.set_track_analysis(entries)
+            self._analysis_version = -1
+        elapsed = time.perf_counter() - started
+        LOG.info(
+            "tempo/key analysis (%s): %d measured, %d cached, %d skipped in %.2fs",
+            "dry run" if dry_run else "stored",
+            len(results), len(cached_keys), len(skipped), elapsed,
+        )
+        return {
+            "analysed": len(results),
+            "cached": len(cached_keys),
+            "cached_keys": cached_keys,
+            "skipped": skipped,
+            "dry_run": dry_run,
+            "elapsed": round(elapsed, 3),
+            "model": analysis_mod.MODEL_VERSION,
+            "results": results,
+            "status": self.analysis_status(),
+        }
+
     # -------------------------------------------------------- pull & filter
 
     def rekordbox_status(self, db_path: Path | None = None) -> dict:
@@ -1214,12 +1567,12 @@ class Api:
                 fallback[str(record.get("id"))] = {**record, **track}
 
         cue_plans_by_id: dict[str, dict] = {}
-        if with_cues:
-            plans = self.export_cue_plans([track["key"] for track in tracks])
-            for track in tracks:
-                plan = plans.get(track["key"])
-                if plan:
-                    cue_plans_by_id[str(track.get("id"))] = plan
+        keys = [track["key"] for track in tracks]
+        plans = self.export_cue_plans(keys) if with_cues else self.beat_grids(keys)
+        for track in tracks:
+            plan = plans.get(track["key"])
+            if plan:
+                cue_plans_by_id[str(track.get("id"))] = plan
         return exporting.set_to_rekordbox_xml(
             self.store.library_xml(),
             [str(track.get("id")) for track in tracks],
@@ -1257,6 +1610,51 @@ class Api:
             for track in tracks
             if track.get("key") in plan
         }
+
+    def duplicates(self, payload: dict | None = None) -> dict:
+        """The duplicate groups in a set, a pool, or the whole library.
+
+        The set is what the UI checks by default -- a track listed twice costs a
+        slot and is the one kind a built set can hold -- while ``keys`` or
+        ``scope: pool`` asks about the pool it was built from.  Nothing is
+        removed here; the report names the row worth keeping and the positions
+        that would go.
+        """
+        payload = payload or {}
+        views = self.all_views()
+        if payload.get("order"):
+            keys = [key for key in payload["order"] if key in views]
+        elif payload.get("keys"):
+            keys = [key for key in payload["keys"] if key in views]
+        elif payload.get("filter"):
+            config = poolfilter.FilterConfig.from_dict(payload["filter"])
+            keys = [view["key"] for view in self._filter(config).kept]
+        else:
+            keys = list(views.keys())
+        report = duplicates_mod.report([views[key] for key in keys])
+        report["scope"] = "set" if payload.get("order") else "pool"
+        return report
+
+    def remove_duplicates(self, payload: dict | None = None) -> dict:
+        """Drop duplicate positions from a set, keeping the chosen row of each.
+
+        ``keep`` maps a group id from :meth:`duplicates` to the 1-based position
+        the user picked.  The answer is the surviving order as keys, so the UI
+        applies it to the set it already holds -- no track is deleted from the
+        library and no file is touched.
+        """
+        payload = payload or {}
+        views = self.all_views()
+        order = payload.get("order") or []
+        tracks = [views[key] for key in order if key in views]
+        if not tracks:
+            raise ValueError("Nothing to de-duplicate: build or load a set first.")
+        plan = duplicates_mod.plan_removal(tracks, payload.get("keep") or {})
+        LOG.info(
+            "duplicates: %d groups, %d row(s) removed from a set of %d",
+            len(plan["groups"]), plan["removed_count"], len(tracks),
+        )
+        return plan
 
     def preflight(self, payload: dict | None = None) -> dict:
         """Check a set before it is exported or written into a library.
@@ -1404,6 +1802,12 @@ class Api:
             return exporting.set_to_csv(tracks), f"{filename}.csv", "text/csv"
         if fmt == "txt":
             return exporting.set_to_txt(tracks, name), f"{filename}.txt", "text/plain"
+        if fmt == "html":
+            tags_by_key = {key: row["tag"] for key, row in tag_rows.items()}
+            return exporting.set_to_html(tracks, name, tags_by_key), f"{filename}.html", "text/html; charset=utf-8"
+        if fmt == "pdf":
+            tags_by_key = {key: row["tag"] for key, row in tag_rows.items()}
+            return exporting.set_to_pdf(tracks, name, tags_by_key), f"{filename}.pdf", "application/pdf"
         raise ValueError(f"Unknown export format: {fmt}")
 
     # ------------------------------------------------------------ pipeline
@@ -1896,6 +2300,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_audio(path, key or "")
         if route == "/api/energy/audio":
             return self._send_json(api.audio_status())
+        if route == "/api/analyze":
+            return self._send_json(api.analysis_status())
+        if route == "/api/watch":
+            return self._send_json(api.watch_status())
         if route == "/api/ingest":
             return self._send_json(api.ingest_status())
         if route == "/api/sets":
@@ -1954,6 +2362,18 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "/api/energy/audio":
             return self._send_json(api.analyse_audio(payload))
+        if route == "/api/analyze":
+            return self._send_json(api.analyse_track_audio(payload))
+        if route == "/api/import/m3u":
+            return self._send_json(api.import_m3u(payload))
+        if route == "/api/watch":
+            return self._send_json(api.watch_configure(payload))
+        if route == "/api/watch/tick":
+            return self._send_json(api.watch_tick())
+        if route == "/api/analyze/clear":
+            api.store.clear_track_analysis()
+            api._analysis_version = -1
+            return self._send_json({"cleared": True, "status": api.analysis_status()})
         if route == "/api/ingest":
             return self._send_json(api.ingest_scan(payload))
         if route == "/api/ingest/run":
@@ -1980,10 +2400,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(api.set_energy(payload))
         if route == "/api/cue-policy":
             return self._send_json(api.set_cue_policy(payload))
+        if route == "/api/track/edit":
+            return self._send_json(api.edit_track(payload))
         if route == "/api/build":
             return self._send_json(api.build(payload))
         if route == "/api/optimize":
             return self._send_json(api.optimize(payload))
+
+        if route == "/api/duplicates":
+            return self._send_json(api.duplicates(payload))
+        if route == "/api/duplicates/remove":
+            return self._send_json(api.remove_duplicates(payload))
 
         if route == "/api/preflight":
             return self._send_json(api.preflight(payload))
@@ -2143,6 +2570,9 @@ def serve(host: str = "127.0.0.1", port: int = 8765, data_dir: Path | None = Non
     handler = type("BoundHandler", (Handler,), {"api": api, "data_dir": data_dir})
     httpd = ThreadingHTTPServer((host, port), handler)
     httpd.daemon_threads = True
+    httpd.api = api  # type: ignore[attr-defined] - so shutdown can stop the watcher
+    if api.store.watch_settings().get("enabled"):
+        api._start_watch()
     return httpd
 
 
@@ -2154,6 +2584,9 @@ def serve_forever(host: str = "127.0.0.1", port: int = 8765, data_dir: Path | No
     except KeyboardInterrupt:
         print("\n[parity] stopped")
     finally:
+        api = getattr(httpd, "api", None)
+        if api is not None:
+            api._stop_watch()
         httpd.server_close()
 
 

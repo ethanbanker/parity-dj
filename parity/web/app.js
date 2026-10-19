@@ -17,7 +17,13 @@ const player = {
   missing: false,   // this track has no local file (streaming stub)
   cues: [],         // the previewed track's hot cues, as jump targets
   bpm: 0,
-  timer: null
+  timer: null,
+  // A loop belongs to the preview: set in/out at the playhead, switch it on.
+  loop: { on: false, start: null, end: null },
+  // Tracks to play after this one, in order.  Client-side: it is a listening
+  // queue, not part of the set.
+  queue: [],
+  beatJump: 4
 };
 
 const state = {
@@ -47,8 +53,11 @@ const state = {
   manage: null,            // the playlist listing behind the Manage panel
   ingest: null,            // ffmpeg status and last-used folders for rename & convert
   ingestPlan: null,        // the last folder scan, kept so Convert re-shows it
+  watch: null,             // watch-folder settings and last scan
   pending: null,           // a dry run waiting for its commit {route, payload, label}
+  metaKey: null,           // the track the metadata panel is editing
   preflight: null,         // the last pre-flight check (missing files, duplicates)
+  duplicates: null,        // the last duplicate scan {scope, groups, ...}
   setTags: {},             // track key -> its set tag ([E7] [peak] 14/24), from /api/tags
   tagToken: 0,             // drops a tag answer that arrives after a newer set was built
   tagTimer: null,          // debounces the tag request to one per settled set
@@ -234,6 +243,7 @@ function startPreview(track) {
   player.missing = false;
   player.cues = [];
   player.bpm = track.bpm || 0;
+  player.loop = { on: false, start: null, end: null };
   player.el.src = `/api/audio?key=${encodeURIComponent(track.key)}`;
   player.el.play().catch(() => {});
   renderPlayer();
@@ -317,9 +327,132 @@ function renderPlayer() {
   $('#previewToggle').title = playing ? 'Pause' : 'Play';
   $('#previewTime').textContent = `${fmtClock(position)} / ${fmtClock(duration)}`;
   $('#previewBar').style.width = `${percent}%`;
+  const loop = player.loop || {};
+  const hasLoop = loop.start !== null && loop.end !== null;
+  const loopNode = $('#previewLoopState');
+  if (loopNode) {
+    loopNode.textContent = hasLoop ? `${fmtClock(loop.start)}–${fmtClock(loop.end)}` : '';
+    loopNode.classList.toggle('on', Boolean(loop.on && hasLoop));
+    loopNode.title = hasLoop
+      ? (loop.on ? 'Loop on' : 'Loop off')
+      : 'No loop set — ⇤ and ⇥ place its ends at the playhead';
+  }
+  const loopToggle = $('#loopToggle');
+  if (loopToggle) loopToggle.classList.toggle('on', Boolean(loop.on && hasLoop));
   $('#previewCues').innerHTML = player.cues.length
     ? player.cues.map(cueButton).join('')
     : '<span class="muted">no cues yet</span>';
+}
+
+/* Loops and beat jump.  Both are in the player, not in the set: they are for
+ * auditioning a track, and neither changes the cue plan or the export. */
+function setLoopIn() {
+  if (!player.track) return;
+  const at = player.el.currentTime || 0;
+  player.loop.start = at;
+  if (player.loop.end !== null && player.loop.end <= at + 0.05) player.loop.end = null;
+  renderPlayer();
+}
+
+function setLoopOut() {
+  if (!player.track) return;
+  const at = player.el.currentTime || 0;
+  if (player.loop.start === null) player.loop.start = 0;
+  if (at <= player.loop.start + 0.05) {
+    toast('The loop out point has to be after the in point.', true);
+    return;
+  }
+  player.loop.end = at;
+  renderPlayer();
+}
+
+function toggleLoop() {
+  if (!player.track) return;
+  if (player.loop.start === null || player.loop.end === null) {
+    // A loop with no ends is not a loop: make a two-bar one from here, so the
+    // button does something useful on the first press.
+    const bpm = player.bpm || (player.track && player.track.bpm) || 0;
+    if (!bpm) { toast('Set the loop points with ⇤ and ⇥ first — this track has no BPM.', true); return; }
+    const start = player.el.currentTime || 0;
+    player.loop.start = start;
+    player.loop.end = Math.min(start + (60 / bpm) * 8, Number.isFinite(player.el.duration) ? player.el.duration : start + 4);
+  }
+  player.loop.on = !player.loop.on;
+  if (player.loop.on && player.el.currentTime >= player.loop.end) {
+    seekTo(player.loop.start);
+  }
+  renderPlayer();
+}
+
+function enforceLoop() {
+  const loop = player.loop || {};
+  if (!loop.on || loop.start === null || loop.end === null) return;
+  if ((player.el.currentTime || 0) >= loop.end - 0.03) {
+    try { player.el.currentTime = loop.start; } catch { /* file refuses to seek */ }
+  }
+}
+
+function beatJumpSeconds() {
+  const bpm = player.bpm || (player.track && player.track.bpm) || 0;
+  return bpm ? (60 / bpm) * player.beatJump : 0;
+}
+
+function jumpBeats(direction) {
+  if (!player.track) return;
+  const amount = beatJumpSeconds();
+  if (!amount) { toast('Beat jump needs a BPM — analyse the track first.', true); return; }
+  nudge(direction * amount);
+}
+
+/* The listening queue: tracks to hear after this one.  It is not the set. */
+function queueTrack(track) {
+  if (!track) return;
+  if (track.streaming || !track.path) {
+    toast('That track is streaming only - there is no local file to play.', true);
+    return;
+  }
+  if (!player.track) {
+    // Nothing is playing: queueing the first track is the same as starting it.
+    startPreview(track);
+    return;
+  }
+  player.queue.push(track);
+  renderQueue();
+  toast(`Queued ${trackLabel(track)}${player.track ? ' after this track' : ''}.`);
+}
+
+function renderQueue() {
+  const count = player.queue.length;
+  $('#queueCount').textContent = count;
+  const list = $('#queueList');
+  if (!list) return;
+  if (!count) {
+    list.innerHTML = '<div class="queue-empty">Nothing queued.</div>';
+    return;
+  }
+  list.innerHTML = player.queue.map((track, index) => (
+    `<div class="queue-row" data-queue-index="${index}" title="Play this now">
+      <span class="num">${index + 1}</span>
+      <div class="tt"><div class="t">${escapeHtml(trackLabel(track))}</div>
+        <div class="s">${track.bpm ? Number(track.bpm).toFixed(0) + ' BPM · ' : ''}${escapeHtml(track.camelot || '–')} · E${track.energy}</div></div>
+      <button class="icon-btn" data-queue-remove="${index}" title="Remove from the queue">✕</button>
+    </div>`
+  )).join('');
+}
+
+function playNextQueued() {
+  if (!player.queue.length) {
+    toast('The queue is empty — press ⏭ on a row to add one.', true);
+    return;
+  }
+  const next = player.queue.shift();
+  renderQueue();
+  startPreview(next);
+}
+
+function clearQueue() {
+  player.queue = [];
+  renderQueue();
 }
 
 function previewPlayPause() {
@@ -356,8 +489,14 @@ function bindPlayer() {
   // audio runs.
   el.addEventListener('play', () => { renderPlayer(); startCuePlayhead(); });
   el.addEventListener('pause', renderPlayer);
-  el.addEventListener('ended', renderPlayer);
-  el.addEventListener('timeupdate', renderPlayer);
+  el.addEventListener('ended', () => {
+    if (player.queue.length) playNextQueued();
+    else renderPlayer();
+  });
+  el.addEventListener('timeupdate', () => {
+    enforceLoop();
+    renderPlayer();
+  });
   el.addEventListener('loadedmetadata', () => {
     player.pending = false;
     // A click on the waveform on a track that was not playing starts the
@@ -393,6 +532,36 @@ function bindPlayer() {
   });
 
   $('#previewToggle').addEventListener('click', previewPlayPause);
+  $('#loopIn').addEventListener('click', setLoopIn);
+  $('#loopOut').addEventListener('click', setLoopOut);
+  $('#loopToggle').addEventListener('click', toggleLoop);
+  $('#jumpBack').addEventListener('click', () => jumpBeats(-1));
+  $('#jumpFwd').addEventListener('click', () => jumpBeats(1));
+  $('#beatJump').addEventListener('change', (event) => {
+    player.beatJump = Number(event.target.value) || 4;
+  });
+  $('#previewNext').addEventListener('click', playNextQueued);
+  $('#queueBtn').addEventListener('click', (event) => {
+    event.stopPropagation();
+    $('#queueMenu').hidden = !$('#queueMenu').hidden;
+    renderQueue();
+  });
+  $('#queueMenu').addEventListener('click', (event) => event.stopPropagation());
+  document.addEventListener('click', () => { $('#queueMenu').hidden = true; });
+  $('#queueList').addEventListener('click', (event) => {
+    const remove = event.target.closest('[data-queue-remove]');
+    if (remove) {
+      player.queue.splice(Number(remove.getAttribute('data-queue-remove')), 1);
+      renderQueue();
+      return;
+    }
+    const row = event.target.closest('[data-queue-index]');
+    if (!row) return;
+    const next = player.queue.splice(Number(row.getAttribute('data-queue-index')), 1)[0];
+    renderQueue();
+    if (next) startPreview(next);
+  });
+  $('#queueClear').addEventListener('click', clearQueue);
   $('#previewCuesEdit').addEventListener('click', () => {
     if (player.track) openCueEditor(player.track);
   });
@@ -465,6 +634,14 @@ function undo() {
  * not installed -- the database path needs it, and nothing else can load a
  * library at all.
  */
+async function importFile(file) {
+  if (/\.m3u8?$/i.test(file.name)) {
+    await importM3UFile(file);
+    return;
+  }
+  await importXml(file);
+}
+
 async function importXml(file) {
   if (!/\.xml$/i.test(file.name)) {
     toast(`${file.name} is not an XML export. A rekordbox collection XML `
@@ -495,6 +672,7 @@ async function loadState() {
   renderRekordboxStatus();
   renderCueStatus();
   renderAudioStatus();
+  renderAnalysisStatus();
   state.cuePolicy = state.meta.cue_policy || 'overwrite';
   if ($('#writeCuePolicy')) $('#writeCuePolicy').value = state.cuePolicy;
 
@@ -502,6 +680,7 @@ async function loadState() {
   $('#reloadBtn').disabled = !loaded;
   $('#analyseBtn').disabled = !loaded;
   if ($('#audioEnergyBtn')) $('#audioEnergyBtn').disabled = !loaded;
+  if ($('#analyseAudioBtn')) $('#analyseAudioBtn').disabled = !loaded;
 
   if (loaded) {
     await selectPlaylist(null, 'All tracks', true);
@@ -511,10 +690,24 @@ async function loadState() {
 
 // Streaming entries (SoundCloud etc.) are part of a rekordbox collection export
 // but have no file behind them, so they are useful to see and easy to forget.
+function analysisBadge(track) {
+  const measured = track.analysis;
+  if (!measured) return '';
+  if (track.bpm_source !== 'analysed' && track.key_source !== 'analysed') return '';
+  const parts = [];
+  if (measured.bpm) parts.push(`${Number(measured.bpm).toFixed(2)} BPM`);
+  if (measured.camelot || measured.key) parts.push(measured.camelot || measured.key);
+  if (measured.first_beat_ms !== undefined) parts.push(`beat ${fmtClock(measured.first_beat_ms / 1000)}`);
+  return `<span class="analysis-badge" title="measured from the audio: ${escapeHtml(parts.join(' · '))}${measured.note ? ' — ' + escapeHtml(measured.note) : ''}">audio</span>`;
+}
+
 function streamingLabel(track) {
-  return track && track.streaming
-    ? ' · <span class="stream-badge" title="Streaming only — no local file">streaming</span>'
-    : '';
+  if (!track || !track.streaming) return '';
+  const title = track.metadata_locked
+    ? 'Streaming only — no local file. rekordbox stores this service’s track name encrypted, '
+      + 'so Parity shows the service and track id instead.'
+    : 'Streaming only — no local file';
+  return ` · <span class="stream-badge" title="${title}">streaming</span>`;
 }
 
 /*
@@ -931,13 +1124,15 @@ function poolRowHtml(track, index, inSet) {
     <button class="add-btn" data-act="add" title="Add to the end of the set">+</button>
     <button class="play-btn ${canPreview(track) ? '' : 'off'}" data-act="preview" title="${previewTitle(track)}">${previewIcon(track)}</button>
     <button class="icon-btn ${canPreview(track) ? '' : 'off'}" data-act="cues" title="${canPreview(track) ? "Edit this track's cues on the waveform" : 'Streaming only — there is no local file to draw'}">〰</button>
+    <button class="icon-btn" data-act="edit" title="Edit this track's metadata">✎</button>
+    <button class="icon-btn" data-act="queue" title="Play this after the current track">⏭</button>
     <input type="checkbox" data-act="include" ${excluded ? '' : 'checked'} title="Include when building">
     <div class="tt">
       <div class="t">${escapeHtml(track.title || '')}</div>
-      <div class="s">${escapeHtml(track.artist || '')}${track.genre ? ' · ' + escapeHtml(track.genre) : ''}${track.bpm ? '' : ' · no BPM'}${streamingLabel(track)}${allCueBadges(track)}</div>
+      <div class="s">${escapeHtml(track.artist || '')}${track.genre ? ' · ' + escapeHtml(track.genre) : ''}${track.bpm ? '' : ' · no BPM'}${streamingLabel(track)}${analysisBadge(track)}${allCueBadges(track)}</div>
     </div>
-    <div class="bpm">${track.bpm ? track.bpm.toFixed(0) : '–'}</div>
-    <div><span class="key-badge">${escapeHtml(track.camelot || '–')}</span></div>
+    <div class="bpm" title="${track.bpm_source === 'analysed' ? 'measured from the audio' : ''}">${track.bpm ? track.bpm.toFixed(0) : '–'}</div>
+    <div><span class="key-badge" title="${track.key_source === 'analysed' ? 'measured from the audio' : ''}">${escapeHtml(track.camelot || '–')}</span></div>
     <input class="energy-input ${track.energy_override ? 'overridden' : ''} ${track.needs_review ? 'review' : ''} ${track.energy_source === 'audio' ? 'measured' : ''}"
            type="number" min="1" max="10" step="0.5" value="${track.energy}"
            data-act="energy" title="${energyTooltip(track)}">
@@ -1097,10 +1292,12 @@ function renderSet() {
       <button class="icon-btn ${locked ? 'on' : ''}" data-act="lock" title="${locked ? 'Unpin' : 'Pin to this position'}">${locked ? '🔒' : '🔓'}</button>
       <div class="tt">
         <div class="t">${escapeHtml(trackLabel(track))}</div>
-        <div class="s">${track.bpm ? track.bpm.toFixed(1) + ' BPM' : 'no BPM'} · ${escapeHtml(track.camelot || track.tonality || '–')}${track.musical_key ? ` (${track.musical_key})` : ''} · E${track.energy} · ${escapeHtml(track.genre || '')}${streamingLabel(track)}${allCueBadges(track)}</div>
+        <div class="s">${track.bpm ? track.bpm.toFixed(1) + ' BPM' : 'no BPM'} · ${escapeHtml(track.camelot || track.tonality || '–')}${track.musical_key ? ` (${track.musical_key})` : ''} · E${track.energy} · ${escapeHtml(track.genre || '')}${streamingLabel(track)}${analysisBadge(track)}${allCueBadges(track)}</div>
       </div>
       <span class="set-tag" hidden></span>
       <div class="row-actions">
+        <button class="icon-btn" data-act="queue" title="Play this after the current track">⏭</button>
+        <button class="icon-btn" data-act="edit" title="Edit this track's metadata">✎</button>
         ${cuePolicyButton(track)}
         <button class="icon-btn" data-act="cues" title="Edit this track's cues on the waveform">〰</button>
         <button class="icon-btn" data-act="up" title="Move up">↑</button>
@@ -1192,6 +1389,10 @@ function bindSetRow(row) {
   row.querySelector('[data-act="preview"]').addEventListener('click', () => togglePreview(track));
   const waveButton = row.querySelector('[data-act="cues"]');
   if (waveButton) waveButton.addEventListener('click', () => openCueEditor(track));
+  const editButton = row.querySelector('[data-act="edit"]');
+  if (editButton) editButton.addEventListener('click', () => openMetaEditor(track));
+  const queueButton = row.querySelector('[data-act="queue"]');
+  if (queueButton) queueButton.addEventListener('click', () => queueTrack(track));
   const policyButton = row.querySelector('[data-act="cue-policy"]');
   if (policyButton) {
     policyButton.addEventListener('click', async () => {
@@ -1603,6 +1804,193 @@ async function exportSet(format) {
   }
 }
 
+/*
+ * Duplicates: the same track twice in a set, one file behind two rows, or the
+ * same artist and title on different files.  The check is on the set when there
+ * is one (a repeated track costs a slot), otherwise on the pool.  The server
+ * groups them; this panel only decides which row of each group stays.
+ */
+async function checkDuplicates() {
+  const scope = state.set.length ? 'set' : 'pool';
+  const payload = scope === 'set'
+    ? { order: state.set.map((track) => track.key) }
+    : { keys: state.pool.map((track) => track.key) };
+  if (!payload.order && !payload.keys.length) {
+    toast('Load a playlist first — there is nothing to check.', true);
+    return null;
+  }
+  try {
+    const report = await api('/api/duplicates', payload);
+    state.duplicates = report;
+    renderDuplicates(report);
+    return report;
+  } catch (error) {
+    toast(error.message, true);
+    return null;
+  }
+}
+
+function renderDuplicates(report) {
+  const groups = report.groups || [];
+  const status = $('#duplicatesStatus');
+  status.textContent = groups.length
+    ? `${report.group_count} duplicate group(s), ${report.duplicate_count} row(s) removable — in the ${report.scope}`
+    : `No duplicates in the ${report.scope} (${report.checked} checked)`;
+  status.classList.toggle('bad', groups.length > 0);
+
+  if (!groups.length) {
+    $('#duplicatesBody').innerHTML =
+      '<div>Every track in this ' + escapeHtml(report.scope) + ' is unique. Nothing to remove.</div>';
+    $('#duplicatesApply').hidden = true;
+    $('#duplicatesPanel').hidden = false;
+    return;
+  }
+
+  const blocks = groups.map((group) => {
+    const rows = group.tracks.map((track) => (
+      `<tr>
+        <td class="num">${track.position}</td>
+        <td>${track.kept ? '<span class="cue-badge">best</span>' : ''}</td>
+        <td>${escapeHtml(track.label)}${track.streaming ? ' <span class="stream-badge">streaming</span>' : ''}</td>
+        <td class="muted">${escapeHtml(track.path || '—')}</td>
+        <td><label class="dup-pick"><input type="radio" name="dup-${escapeHtml(group.id)}"
+             value="${track.position}" ${track.kept ? 'checked' : ''}> keep</label></td>
+      </tr>`
+    )).join('');
+    return `<h4>${escapeHtml(group.reason)} — ${group.positions.length} rows</h4>
+      <table><tr><th>#</th><th></th><th>Track</th><th>File</th><th>Keep</th></tr>${rows}</table>`;
+  });
+  blocks.unshift(
+    '<div>Choose the row to keep in each group. Applying it removes the other rows from '
+    + `<b>the ${escapeHtml(report.scope)}</b>; no file is deleted and the library is untouched.</div>`
+  );
+  $('#duplicatesBody').innerHTML = blocks.join('');
+  $('#duplicatesApply').hidden = false;
+  $('#duplicatesPanel').hidden = false;
+}
+
+async function applyDuplicates() {
+  const report = state.duplicates;
+  if (!report || !report.groups || !report.groups.length) return;
+  const keep = {};
+  report.groups.forEach((group) => {
+    const chosen = document.querySelector(`input[name="dup-${group.id}"]:checked`);
+    if (chosen) keep[group.id] = Number(chosen.value);
+  });
+
+  if (report.scope === 'pool') {
+    const drop = new Set();
+    report.groups.forEach((group) => {
+      const chosen = keep[group.id] || group.keep_position;
+      group.tracks.forEach((track) => {
+        if (track.position !== chosen) drop.add(track.key);
+      });
+    });
+    drop.forEach((key) => state.excluded.add(key));
+    renderPool();
+    $('#duplicatesPanel').hidden = true;
+    toast(`${drop.size} duplicate row(s) unticked in the pool — the files are untouched.`);
+    return;
+  }
+
+  try {
+    const plan = await api('/api/duplicates/remove', {
+      order: state.set.map((track) => track.key),
+      keep
+    });
+    if (!plan.removed_count) {
+      toast('Nothing was removed — the duplicates already agree with your choices.');
+      return;
+    }
+    pushHistory();
+    const held = new Map(state.set.map((track) => [track.key, track]));
+    const next = plan.order
+      .map((key) => held.get(key) || state.trackIndex.get(key))
+      .filter(Boolean);
+    state.set = next;
+    renderSet();
+    renderPool();
+    $('#duplicatesPanel').hidden = true;
+    toast(`Removed ${plan.removed_count} duplicate row(s) from the set.`);
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+/*
+ * The metadata editor.
+ *
+ * A track's title, artist and comment are what the library is searched by, so
+ * they are editable here rather than only in rekordbox.  Saving without
+ * "Write tags to the file" changes what Parity shows; with it, ffmpeg copies
+ * the audio into a temp file with the new tags and replaces the original, so
+ * the samples are untouched and the other apps can read the change.
+ */
+function openMetaEditor(track) {
+  if (!track) return;
+  state.metaKey = track.key;
+  const fields = {
+    title: track.title || '',
+    artist: track.artist || '',
+    album: track.album || '',
+    genre: track.genre || '',
+    comment: track.comments || '',
+    year: track.year || '',
+    track_number: track.track_number || '',
+    bpm: track.bpm || '',
+    key: track.camelot || track.tonality || ''
+  };
+  $('#metaTitle').value = fields.title;
+  $('#metaArtist').value = fields.artist;
+  $('#metaAlbum').value = fields.album;
+  $('#metaGenre').value = fields.genre;
+  $('#metaComment').value = fields.comment;
+  $('#metaYear').value = fields.year;
+  $('#metaTrack').value = fields.track_number;
+  $('#metaBpm').value = fields.bpm;
+  $('#metaKey').value = fields.key;
+  $('#metaWriteTags').checked = false;
+  // A streaming-only row has no file to tag, so the option is visibly off.
+  const local = canPreview(track);
+  $('#metaWriteTags').disabled = !local;
+  $('#metaStatus').textContent = track.streaming
+    ? 'streaming only — the library record can change, the file cannot'
+    : track.path || '';
+  $('#metaPanel').hidden = false;
+  $('#metaTitle').focus();
+}
+
+async function saveMetaEditor() {
+  const key = state.metaKey;
+  if (!key) return;
+  const fields = {
+    title: $('#metaTitle').value,
+    artist: $('#metaArtist').value,
+    album: $('#metaAlbum').value,
+    genre: $('#metaGenre').value,
+    comment: $('#metaComment').value,
+    year: $('#metaYear').value,
+    track_number: $('#metaTrack').value,
+    bpm: $('#metaBpm').value,
+    key: $('#metaKey').value
+  };
+  const writeTags = $('#metaWriteTags').checked;
+  try {
+    const result = await api('/api/track/edit', { key, fields, write_tags: writeTags });
+    const tags = result.tags || {};
+    if (writeTags && tags.missing && tags.missing.length) {
+      toast(`Saved, but this container cannot hold: ${tags.missing.join(', ')}`, true);
+    } else {
+      toast(writeTags ? 'Metadata saved and written to the file.' : 'Metadata saved.');
+    }
+    $('#metaPanel').hidden = true;
+    state.metaKey = null;
+    await refreshTracks();
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
 async function saveSet() {
   if (!state.set.length) { toast('Nothing to save yet.', true); return; }
   try {
@@ -1696,6 +2084,7 @@ async function refreshTracks() {
   state.meta = await api('/api/state');
   renderCueStatus();
   renderAudioStatus();
+  renderAnalysisStatus();
   renderLibraryStatus();
   const query = state.playlistId ? `?playlist=${encodeURIComponent(state.playlistId)}` : '';
   const data = await api(`/api/tracks${query}`);
@@ -1740,6 +2129,101 @@ function renderAudioStatus() {
     ? 'These tracks use their measured energy. Type a value in the Energy column to override one.'
     : `Read loudness, brightness, dynamic range and drive from each local file with ${engine}.`
     + (audio.stale ? ` ${audio.stale} stored measurement(s) are from an older model and will be redone.` : '');
+}
+
+/*
+ * The tempo/key status line: how many local tracks have a measured BPM, key
+ * and grid, and the missing half of the stack when this machine cannot run it.
+ */
+function renderAnalysisStatus() {
+  const node = $('#analysisStatus');
+  if (!node) return;
+  const info = (state.meta || {}).analysis || {};
+  if (!state.meta || !state.meta.has_library) {
+    node.textContent = '';
+    return;
+  }
+  if (!info.available) {
+    node.textContent = info.ffmpeg_ok === false
+      ? 'BPM/key analysis needs ffmpeg'
+      : 'BPM/key analysis needs numpy';
+    node.title = (info.ffmpeg_ok === false ? info.ffmpeg_error : info.numpy_error)
+      || info.error || '';
+    return;
+  }
+  const measured = info.analysed || 0;
+  const local = info.local || 0;
+  node.textContent = measured
+    ? `${measured} of ${local} local tracks analysed`
+    : 'BPM/key not analysed yet';
+  node.title = measured
+    ? `${info.using_bpm || 0} track(s) take their BPM from the audio and ${info.using_key || 0} their key; the library's own values always win.`
+    : 'Read BPM, key and a beat grid from each local file with ffmpeg and numpy.';
+}
+
+async function analyseTrackAudio() {
+  const button = $('#analyseAudioBtn');
+  const status = $('#analysisStatus');
+  const inPlay = (state.set.length ? state.set : state.pool)
+    .filter((track) => !track.streaming);
+  if (!inPlay.length) {
+    toast('Every track in play is streaming only — there is no file to analyse.', true);
+    return;
+  }
+  let remaining = inPlay.map((track) => track.key);
+  const total = inPlay.length;
+  button.disabled = true;
+  const previous = status.textContent;
+  const bpms = [];
+  const keys = [];
+  const reasons = [];
+  let measured = 0;
+  let cached = 0;
+  let skipped = 0;
+  try {
+    for (let round = 0; round < 200 && remaining.length; round += 1) {
+      const result = await api('/api/analyze', { keys: remaining, local_only: true, limit: 8 });
+      const rows = result.results || [];
+      const unreadable = result.skipped || [];
+      const settled = new Set([
+        ...rows.map((row) => row.key),
+        ...(result.cached_keys || []),
+        ...unreadable.map((row) => row.key)
+      ]);
+      measured += result.analysed;
+      cached += (result.cached_keys || []).length;
+      skipped += unreadable.length;
+      rows.forEach((row) => {
+        if (row.bpm) bpms.push(row.bpm);
+        if (row.camelot) keys.push(row.camelot);
+        if (row.note) reasons.push(row.note);
+      });
+      unreadable.forEach((row) => { if (row.reason) reasons.push(row.reason); });
+      remaining = remaining.filter((key) => !settled.has(key));
+      status.textContent = `Analysing ${measured} of ${total} local tracks…`;
+      if (!result.analysed || !settled.size) break;
+    }
+    if (measured) {
+      const spread = bpms.length
+        ? `${bpms.length} BPM values ${Math.min(...bpms).toFixed(1)}–${Math.max(...bpms).toFixed(1)}`
+        : 'no tempo found';
+      toast(`Analysed ${measured} of ${total} tracks${cached ? `, ${cached} already cached` : ''} — ${spread}`
+        + (keys.length ? `, ${new Set(keys).size} key(s)` : ''));
+    } else if (skipped) {
+      status.textContent = `${skipped} of ${total} tracks could not be analysed`;
+      toast(`${skipped} of ${total} tracks could not be analysed — ${reasons[0] || 'unknown reason'}`, true);
+    } else {
+      status.textContent = previous;
+      toast(`All ${total} tracks in play are already analysed — nothing to redo.`);
+    }
+    await refreshTracks();
+  } catch (error) {
+    status.textContent = previous;
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+    renderAnalysisStatus();
+  }
 }
 
 function audioSpread(energies) {
@@ -1853,8 +2337,16 @@ async function analyseCues() {
 
 function attachEvents() {
   $('#analyseBtn').addEventListener('click', analyseCues);
+  const duplicateButton = $('#duplicatesBtn');
+  if (duplicateButton) duplicateButton.addEventListener('click', checkDuplicates);
+  const applyDuplicatesButton = $('#duplicatesApply');
+  if (applyDuplicatesButton) applyDuplicatesButton.addEventListener('click', applyDuplicates);
+  const duplicatesClose = $('#duplicatesClose');
+  if (duplicatesClose) duplicatesClose.addEventListener('click', () => { $('#duplicatesPanel').hidden = true; });
   const audioButton = $('#audioEnergyBtn');
   if (audioButton) audioButton.addEventListener('click', measureEnergy);
+  const analyseButton = $('#analyseAudioBtn');
+  if (analyseButton) analyseButton.addEventListener('click', analyseTrackAudio);
   const policySelect = $('#writeCuePolicy');
   if (policySelect) {
     policySelect.addEventListener('change', async (event) => {
@@ -1891,7 +2383,7 @@ function attachEvents() {
     if (!draggedFiles(event)) return;
     event.preventDefault();
     const file = event.dataTransfer.files && event.dataTransfer.files[0];
-    if (file) await importXml(file);
+    if (file) await importFile(file);
   });
 
   $('#reloadBtn').addEventListener('click', async () => {
@@ -1933,6 +2425,14 @@ function attachEvents() {
     // can be opened, whether or not it has been built into a set yet.
     if (event.target.closest('[data-act="cues"]')) {
       if (track) openCueEditor(track);
+      return;
+    }
+    if (event.target.closest('[data-act="edit"]')) {
+      if (track) openMetaEditor(track);
+      return;
+    }
+    if (event.target.closest('[data-act="queue"]')) {
+      if (track) queueTrack(track);
       return;
     }
     if (!event.target.closest('[data-act="add"]')) return;
@@ -2024,10 +2524,21 @@ function attachEvents() {
       const tool = button.getAttribute('data-tool');
       if (tool === 'manage') toggleManage();
       else if (tool === 'ingest') toggleIngest();
+      else if (tool === 'watch') toggleWatch();
     });
   });
   $('#manageClose').addEventListener('click', () => { $('#managePanel').hidden = true; });
   $('#ingestClose').addEventListener('click', () => { $('#ingestPanel').hidden = true; });
+  $('#watchClose').addEventListener('click', () => { $('#watchPanel').hidden = true; });
+  $('#watchSave').addEventListener('click', saveWatch);
+  $('#watchScan').addEventListener('click', scanWatch);
+  $('#watchPathPick').addEventListener('click', () => pickFolder('watch'));
+  $('#m3uBtn').addEventListener('click', () => $('#m3uPick').click());
+  $('#m3uPick').addEventListener('change', async (event) => {
+    const file = event.target.files && event.target.files[0];
+    event.target.value = '';
+    if (file) await importM3UFile(file);
+  });
   $('#ingestSourcePick').addEventListener('click', () => pickFolder('source'));
   $('#ingestDestinationPick').addEventListener('click', () => pickFolder('destination'));
   $('#ingestScanBtn').addEventListener('click', () => ingestScan());
@@ -2046,6 +2557,8 @@ function attachEvents() {
   $('#apPlaylists').addEventListener('click', (event) => manageClick(event, 'autopilot'));
   $('#rxDeleteTracks').addEventListener('click', () => deleteSetTracks('rekordbox'));
   $('#apDeleteTracks').addEventListener('click', () => deleteSetTracks('autopilot'));
+  $('#metaClose').addEventListener('click', () => { $('#metaPanel').hidden = true; });
+  $('#metaSave').addEventListener('click', saveMetaEditor);
   $('#reportCommit').addEventListener('click', commitPending);
   $('#reportCancel').addEventListener('click', clearPending);
 
@@ -2100,6 +2613,9 @@ function attachEvents() {
     if (!typing && player.track) {
       if (event.key === '[') previewPreviousCue();
       if (event.key === ']') previewNextCue();
+      if (event.key.toLowerCase() === 'l') { event.preventDefault(); toggleLoop(); }
+      if (event.key === ',') { event.preventDefault(); jumpBeats(-1); }
+      if (event.key === '.') { event.preventDefault(); jumpBeats(1); }
     }
     if (event.key === 'Escape' && player.track) stopPreview();
   });
@@ -2546,7 +3062,11 @@ function deleteSetTracks(target) {
  * below with the path.  The buttons are therefore only offered where that
  * bridge exists -- the app window -- and a browser types the path instead.
  */
-const PICK_FIELDS = { source: '#ingestSource', destination: '#ingestDestination' };
+const PICK_FIELDS = {
+  source: '#ingestSource',
+  destination: '#ingestDestination',
+  watch: '#watchPath'
+};
 
 function pickFolder(who) {
   const field = $(PICK_FIELDS[who]);
@@ -2580,8 +3100,146 @@ async function toggleIngest() {
   panel.hidden = !panel.hidden;
   if (!panel.hidden) {
     $('#managePanel').hidden = true;
+    $('#watchPanel').hidden = true;
     closeCueEditor();
     await refreshIngest();
+  }
+}
+
+/*
+ * The watch folder and M3U import.
+ *
+ * A new download should not need a trip through rekordbox to become a track the
+ * pool can build with.  The watch folder reads a folder every few seconds and
+ * adds what landed; an M3U is the same import, once, from a file.  Both add
+ * library rows and a playlist -- nothing is moved, converted or written to the
+ * DJ apps.
+ */
+async function toggleWatch() {
+  const panel = $('#watchPanel');
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) {
+    $('#managePanel').hidden = true;
+    $('#ingestPanel').hidden = true;
+    closeCueEditor();
+    await refreshWatch();
+  }
+}
+
+async function refreshWatch() {
+  const status = $('#watchStatus');
+  status.textContent = 'Reading the watch folder…';
+  status.classList.remove('bad');
+  try {
+    state.watch = await api('/api/watch');
+  } catch (error) {
+    state.watch = null;
+    status.textContent = error.message;
+    status.classList.add('bad');
+    return;
+  }
+  renderWatch();
+}
+
+function renderWatch() {
+  const info = state.watch || {};
+  $('#watchPath').value = info.path || '';
+  $('#watchPlaylist').value = info.playlist || '';
+  $('#watchRecursive').checked = info.recursive !== false;
+  $('#watchEnabled').checked = Boolean(info.enabled);
+  const status = $('#watchStatus');
+  status.textContent = info.enabled
+    ? `${info.running ? 'watching' : 'on'} · ${info.playlist_count || 0} track(s) in “${info.playlist || 'the playlist'}”`
+    : 'off — switching it on imports new files as they land';
+  status.title = info.last_scan
+    ? `last scan ${info.last_scan}, ${info.last_added || 0} added; ${info.seen || 0} file(s) remembered`
+    : 'No scan yet.';
+  if (info.error) status.title = info.error;
+  const parts = [];
+  if (info.path) {
+    parts.push(info.exists
+      ? `Folder: ${escapeHtml(info.path)}`
+      : `<span class="warn">No folder at ${escapeHtml(info.path)}</span>`);
+  }
+  if (info.available === false) {
+    parts.push('<span class="warn">ffprobe is missing: files still import, but their tags and length cannot be read.</span>');
+  }
+  if (info.last_scan) {
+    parts.push(`Last scan ${escapeHtml(info.last_scan)}: ${info.last_added || 0} new file(s), `
+      + `${info.seen || 0} remembered.`);
+  }
+  if (info.last_error) parts.push(`<span class="warn">${escapeHtml(info.last_error)}</span>`);
+  $('#watchReport').innerHTML = parts.length ? parts.join('<br>') : 'Pick a folder to watch, or import an M3U below.';
+}
+
+function watchReportHtml(report) {
+  if (!report) return '';
+  const rows = (report.added_tracks || []).slice(0, 20).map((track) => (
+    `<tr><td>${escapeHtml(track.label || '')}</td><td class="muted">${escapeHtml(track.path || '')}</td></tr>`
+  )).join('');
+  return `<div>${report.scanned || 0} file(s) scanned, <b>${report.added || 0}</b> new`
+    + `${report.playlist ? ` into “${escapeHtml(report.playlist)}”` : ''}.</div>`
+    + (report.note ? `<div class="warn">${escapeHtml(report.note)}</div>` : '')
+    + (rows ? `<table>${rows}</table>` : '');
+}
+
+async function saveWatch() {
+  const path = $('#watchPath').value.trim();
+  if (!path) { toast('Choose a folder to watch first.', true); return; }
+  try {
+    const result = await api('/api/watch', {
+      path,
+      enabled: $('#watchEnabled').checked,
+      recursive: $('#watchRecursive').checked,
+      playlist: $('#watchPlaylist').value.trim()
+    });
+    state.watch = result.status;
+    state.meta = result.state;
+    renderWatch();
+    $('#watchReport').innerHTML = watchReportHtml(result.report);
+    toast(result.report && result.report.added
+      ? `Imported ${result.report.added} new file(s) into “${result.report.playlist}”.`
+      : ($('#watchEnabled').checked ? 'Watching that folder.' : 'Watch folder saved.'));
+    await loadState();
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function scanWatch() {
+  try {
+    const result = await api('/api/watch/tick', {});
+    state.watch = result.status;
+    state.meta = result.state;
+    renderWatch();
+    $('#watchReport').innerHTML = watchReportHtml(result.report);
+    toast(result.report.added
+      ? `Imported ${result.report.added} new file(s).`
+      : 'No new audio files in that folder.');
+    await loadState();
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function importM3UFile(file) {
+  try {
+    const text = await file.text();
+    const result = await api('/api/import/m3u', { text, name: file.name.replace(/\.[^.]+$/, '') });
+    const missing = (result.missing || []).length;
+    toast(`Imported “${result.playlist}”: ${result.added} new track(s), `
+      + `${result.matched} already in the library`
+      + (missing ? `, ${missing} file(s) not found` : ''));
+    state.meta = result.state;
+    await loadState();
+    $('#watchPanel').hidden = false;
+    await refreshWatch();
+    if (missing) {
+      $('#watchReport').innerHTML = `<div class="warn">${missing} path(s) in ${escapeHtml(file.name)} do not exist; `
+        + 'the tracks that do were imported.</div>';
+    }
+  } catch (error) {
+    toast(error.message, true);
   }
 }
 
@@ -3454,6 +4112,7 @@ async function init() {
   // for the traffic lights.  In a browser there is nothing to clear.
   if (isAppShell()) document.documentElement.classList.add('shell-app');
   bindPlayer();
+  renderQueue();
   attachEvents();
   bindCueEditor();
   syncPickButtons();

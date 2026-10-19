@@ -6,8 +6,10 @@ Read your rekordbox library — straight from `master.db`, no XML export needed 
 pick a playlist or a folder on disk, purge everything that isn't a local file,
 order what's left along an energy curve while respecting the **Camelot wheel**
 and keeping tempo jumps mixable, place eight hot cues across the intro, build,
-drop, breakdown and mix-out, manage both libraries from the window, and export
-something both rekordbox and AUTO/PILOT can import.
+drop, breakdown and mix-out, fill in the BPM, key and beat grid rekordbox has
+not analysed, tidy duplicates and metadata, take an M3U or a watched folder as
+a library, manage both libraries from the window, and export something both
+rekordbox and AUTO/PILOT can import — or a printable HTML/PDF set list.
 
 Everything runs on your machine. No account, no upload, no network access at all:
 the server binds to `127.0.0.1` only, and your library never leaves the computer.
@@ -225,6 +227,53 @@ mirrored, and artwork travels where the container can hold it — an MP3's cover
 comes across into AIFF; where it cannot (WAV), the report says so on the rows
 where the source had it, rather than leaving you to find out.
 
+## Starting from an M3U or a watch folder
+
+A library does not have to begin in rekordbox. **Files & libraries ▾ → Watch
+folder & M3U** does both jobs:
+
+* **An .m3u or .m3u8** becomes a playlist. `#EXTINF` supplies the length and the
+  `artist - title`, relative paths resolve against the playlist's own folder,
+  and a file the library already has is matched by its absolute path so an
+  import never adds a second row for it. A streaming URL is kept as a
+  streaming row — the pool already knows it has no file to play. Missing paths
+  are counted and named, not silently dropped; the tracks that do exist are
+  imported.
+* **A watch folder** is the same import on a timer. Point it at the folder new
+  downloads land in, tick **Watch it**, and each new audio file is probed with
+  ffprobe, added to the library and appended to a playlist named for the folder
+  (`Watch: incoming`). Nothing is moved, converted or written to a DJ app;
+  files that disappear stay in the library rather than being deleted behind
+your back.
+
+Both work when Parity has no library at all, so a folder of downloads can be
+built into a set without exporting anything from rekordbox first. A dropped
+M3U is read in the browser: absolute paths work, while relative ones need the
+folder they are relative to.
+
+## Measuring tempo, key and the beat grid
+
+**Analyse audio** is the local answer to a track rekordbox has never analysed.
+It decodes the first two minutes with ffmpeg and measures, with numpy:
+
+| What | How |
+|------|-----|
+| **BPM** | the strongest period in the onset envelope's autocorrelation, then a least-squares line through the onsets that land on the grid — the autocorrelation finds the ballpark, the regression gets 128 BPM to 128.0 rather than 129.2 |
+| **Key** | a chroma vector correlated against the Krumhansl-Schmuckler major and minor profiles in all twelve rotations, with a bonus when the candidate's tonic is the lowest strong bass note |
+| **Beat grid** | that tempo's period plus the phase that puts the most onset energy on the beat |
+
+The library's own BPM and key always win; the measurement fills what is
+missing and is reported beside it (`analysed_bpm`, `analysed_key`). On the
+reference synthetic checks the tempo lands within 0.2 BPM from 90 to 174, and
+major and minor triads map to the right Camelot code. The result is cached by
+file (path, size, mtime) and model, so a second run only reads what changed.
+A track with no tonal centre (a bare kick and hats) reports no key rather than
+inventing one, and a weak pulse says the tempo is a guess.
+
+The grid is one tempo for the whole track; a track that changes tempo is not
+split into segments, and the direct `master.db` write does not rewrite BPM
+(the measurement is in the export's `<TEMPO>` and in Parity's own pool).
+
 ## What it does
 
 **Build along an energy curve.** Pick `Journey`, `Peak time`, `Warm up`,
@@ -282,6 +331,31 @@ virtualised, so only the rows on screen exist in the DOM — and a set can be up
 1000 tracks. Building a 300-track set from a 3000-track playlist takes a couple
 of seconds.
 
+**Fill in what rekordbox has not.** A download, a folder from a friend or a
+playlist file often arrives with no BPM, no key and no beat grid. **Analyse
+audio** measures all three locally: the strongest period in the onset
+envelope's autocorrelation, refined by the onsets that land on the grid; a
+chroma correlated against the Krumhansl-Schmuckler major and minor profiles;
+and the phase that puts the most onset energy on the beat. Values the library
+already has are never overwritten — the measurement fills the gaps, and the
+pool marks a measured value `audio`. The measured grid also reaches the export
+as a `<TEMPO>`, even when the export carries no cues.
+
+**Clean the set and the pool.** **Duplicates** finds the same track listed
+twice, one file behind two rows, and the same artist and title on different
+files, groups them once even when several of those are true at the same time,
+and lets you keep the row you want. A duplicate removed from a set is dropped
+from the set; one removed from the pool is unticked there. No file and no
+library row is deleted.
+
+**Edit the metadata, and optionally the file.** Every track row has a ✎ button:
+title, artist, album, genre, comment, year, track number, BPM and key. Saving
+changes Parity's library record; ticking **Write tags to the file** also
+rewrites the file's own tags with ffmpeg — the audio is copied, not re-encoded,
+so the samples are untouched. A container that cannot hold a field says so:
+WAV's INFO chunk has no BPM or key slot, and the report names them rather than
+claiming a write that never landed.
+
 **Know what's actually on disk.** A rekordbox collection also contains streaming
 entries — SoundCloud edits and bootlegs, for instance — which have no file behind
 them (rekordbox writes those as `file://localhostsoundcloud:…` locations).
@@ -289,6 +363,14 @@ Parity tags such rows `streaming` in the pool and in the set, and the
 **Local files only** tickbox hides them, builds included. If a set you built does
 contain streaming-only tracks, the stats line says how many, so it is never a
 surprise when you go to play it.
+
+For Spotify and Beatport rows, rekordbox keeps the name encrypted inside
+master.db (`$A7:v1:…`) — the service's metadata is not handed to another app —
+so Parity does not display that ciphertext. It shows the one readable fact, the
+service and the track id (`Spotify track 5ZcmUzUzeuYnMjHYQXyHSz`), leaves the
+fields it cannot read blank, and keeps the BPM, length and id that are plain.
+The `streaming` badge says why on hover. A library imported before this check
+existed is repaired in place on the next launch; your own edits are untouched.
 
 **Purge, and say what was purged.** The pool filter drops, and reports on, four
 kinds of noise: streaming stubs, local paths that no longer exist (external drive
@@ -376,11 +458,18 @@ pinned tracks and everything you fixed by hand. `Undo` (Ctrl+Z) steps back.
 `Ctrl/Cmd+Enter` rebuilds.
 
 **Export.** AUTO/PILOT bundle, Send to AUTO/PILOT (an XML written to
-`~/Downloads`), rekordbox XML, M3U8, CSV, or a printable text set list. Saved sets
-are stored locally too — and **Delete** removes the loaded one — while cue plans
-persist between runs, so exporting later does not mean analysing again. A cue plan
-written by an older cue layout is dropped rather than shown half-filled, and the
-pool says so until you analyse again.
+`~/Downloads`), rekordbox XML, M3U8, CSV, a printable text set list, or a
+self-contained **HTML** / **PDF** set list for a phone, a printer or a folder
+beside the XML. Saved sets are stored locally too — and **Delete** removes the
+loaded one — while cue plans persist between runs, so exporting later does not
+mean analysing again. A cue plan written by an older cue layout is dropped
+rather than shown half-filled, and the pool says so until you analyse again.
+
+**Listen while you choose.** The preview has a loop (⇤ / ⇥ place its ends at the
+playhead, ↻ switches it on, `L` toggles it), beat jump by 1–32 beats using the
+track's own BPM (`,` and `.`), and a queue: **⏭** on any row puts it next, and a
+track that ends moves on to the queue instead of stopping. The queue and the
+loop are for listening; neither changes the set, the cue plan or an export.
 
 ## The cue editor: the waveform, and moving a cue by hand
 
@@ -849,6 +938,16 @@ press. Each stage is also available on its own:
 | `GET  /api/energy/audio` | whether ffmpeg/librosa are available, and how many tracks are measured |
 | `POST /api/energy/audio` | measure loudness, brightness, dynamics and drive per track (`keys`, `dry_run`, `force`, `limit`) |
 | `POST /api/energy/audio/clear` | forget the measured energies |
+| `GET  /api/analyze` | whether BPM/key/grid analysis can run here, and how many local tracks have it |
+| `POST /api/analyze` | measure BPM, key and a beat grid (`keys`, `dry_run`, `force`, `limit`) |
+| `POST /api/analyze/clear` | forget the measured tempo, keys and grids |
+| `POST /api/duplicates` | group duplicates in a set or a pool (`order` / `keys` / `filter`) |
+| `POST /api/duplicates/remove` | drop the unchosen rows from a set (`order`, `keep` by group id) |
+| `POST /api/track/edit` | edit one track's metadata (`fields`), and optionally write the file's tags (`write_tags`) |
+| `GET  /api/watch` | the watch folder's settings, playlists and what the last scan did |
+| `POST /api/watch` | save the folder and switches; a switched-on folder scans at once (`path`, `enabled`, `recursive`, `playlist`) |
+| `POST /api/watch/tick` | scan once, now |
+| `POST /api/import/m3u` | import an M3U/M3U8 as a playlist (`path`, or `text` + `name`) |
 | `GET  /api/ingest` | whether ffmpeg/ffprobe are available, the formats, and the folder last used |
 | `POST /api/ingest` | scan a download folder: the tidied names, the conversions, nothing written |
 | `POST /api/ingest/run` | convert and copy that folder into the destination (`dry_run` to only report) |
@@ -876,6 +975,11 @@ parity/
   tags.py               set tags ([E7] [peak] 14/24) and the merge that keeps your comment
   preflight.py          missing files and duplicate entries, before an export
   audio.py              energy measured from the audio (ffmpeg + numpy/librosa)
+  analysis.py           BPM, key and beat grid measured from the audio (ffmpeg + numpy)
+  duplicates.py         duplicate grouping and the remove-one plan
+  metadata.py           metadata validation and ffmpeg tag writing (atomic re-mux)
+  watchfolder.py        M3U import and the watch-folder scanner
+  pdf.py                a small, dependency-free PDF writer for set lists
   waveform.py           three-band waveform peaks for the cue editor (ffmpeg + fft)
   ingest.py             filename tidying + ffmpeg conversion of a download folder
   energy.py             energy heuristics
@@ -908,12 +1012,20 @@ exactly even if you move the original file.
 python3 -m unittest discover -s tests -t .
 ```
 
-529 tests cover key notation and harmonic scoring, the XML parser, energy
+604 tests cover key notation and harmonic scoring, the XML parser, energy
 heuristics, the filename rules and the folder plan (including the silence
 arithmetic and the conversion offsets), curve adherence (including the curve-fit selection against a
 slot-by-slot greedy it has to beat), lock handling, the optimiser, every export
 format, the API, a 1500-track library round trip, the track-view cache, and an
-HTTP smoke test of the real server — plus the master.db reader (against a
+HTTP smoke test of the real server. The newer library tools are covered from
+both ends too: duplicate grouping (one problem reported once, transitive
+matches, a chosen row kept, a stale choice refused), metadata validation and
+tag writing (an MP3 round trip, an AIFF, WAV naming the fields it cannot hold,
+and an unreadable file leaving the original untouched), tempo/key/grid
+estimation on synthetic clicks and triads plus caching and the grid in the
+exported XML, M3U parsing and re-import without duplicate rows, the watch folder
+test import/re-scan/missing-folder cases, and the HTML/PDF writers (escape
+rules, a valid xref, and a long set paginating) — plus the master.db reader (against a
 duck-typed stand-in, so it runs without pyrekordbox), the pool filter, cue
 placement rules and the injected `<POSITION_MARK>` output. The tags are covered
 from both ends: the merge (a comment kept, our own tag replaced, another tool's
@@ -1002,8 +1114,33 @@ CLI's write path.
 - A moved cue is written to Parity's own plan, not to rekordbox: the pads reach
   the database on the next **Write ▾ → rekordbox master.db**, exactly like the
   generated ones, and until then nothing outside Parity has changed.
-- Wrong or missing BPM/key in rekordbox means missing data here — analyse your
-tracks in rekordbox first.
+- Wrong or missing BPM/key in rekordbox means missing data here — **Analyse
+audio** fills the gaps from the files, but it measures one tempo for the whole
+track and does not write BPM back into `master.db`: the value lives in Parity's
+pool and in the export's `<TEMPO>`. A measured key with little tonal material
+is reported as ambiguous rather than confidently wrong.
+- **Write tags to the file** re-muxes with ffmpeg (`-c copy`), so the audio
+samples are untouched, but the file is rewritten in place after a temp copy. A
+container keeps what it can hold: WAV has no BPM or key in its INFO chunk, so
+the report names those as not written. Parity's library record and the file
+agree only when the tick was on; without it, the edit is local to Parity.
+- **Duplicates** are removed from a set (the unchosen rows are dropped) or from
+the pool (they are unticked), never from the library and never from disk. A
+library-wide delete is still `Files & libraries ▾ → Manage libraries`, and it
+is a separate, explicit decision.
+- The **watch folder** imports into Parity's library and its playlist; it does
+not move the files, convert them, or make rekordbox see them. Export the set or
+write it when you want the tracks in a DJ app. An M3U dropped in a browser has
+no base folder, so only its absolute paths resolve; a path passed to the API
+does have one.
+- The **queue and the loop** belong to the preview player: they are not saved
+with a set and do not travel in an export. The loop is one in/out pair, and beat
+jump needs a BPM — a track the library and the analyser both lack one for says
+so instead of guessing.
+- The **HTML and PDF** set lists are text: title, order, BPM, key, energy, genre
+and length. No waveform, artwork or cue markers, and a title outside Latin-1 is
+replaced in the PDF by `?` because the base-14 fonts cannot draw it (the HTML
+page keeps the original text).
 - Cue colours: the XML export carries the RGB values in
   `parity/structure.py` (the green is taken verbatim from a real rekordbox
   export); the direct write stores the matching *palette* entry instead

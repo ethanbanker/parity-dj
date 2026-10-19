@@ -372,6 +372,9 @@ def _library_from_db(db, source: str, product: dict, share_root: Path | None = N
         track.analysed = bool(content.Analysed)
         track.analysis_path = anlz.get("DAT", "")
         track.cues = _cue_rows(cues_by_content, str(content.ID))
+        # Spotify/Beatport names live in master.db as ciphertext; the pool shows
+        # the service and id instead of a base64 blob (parity.rekordbox).
+        track.sanitize_metadata()
         library.tracks[track.track_id] = track
 
     ordered: dict[str, list[str]] = {}

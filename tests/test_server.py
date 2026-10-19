@@ -5,6 +5,7 @@ import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
+import wave
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest import mock
@@ -1482,6 +1483,35 @@ class StoreMigrationTest(unittest.TestCase):
         before = store.path.read_text()
         self.assertEqual(Store(directory).path.read_text(), before)
 
+    def test_encrypted_streaming_names_are_repaired_in_place(self):
+        """A library imported before the check existed is fixed on the next
+        launch, without re-importing over the user's own edits."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        directory = Path(tmp.name)
+        store = Store(directory)
+        store.set_library(
+            rekordbox.parse_collection(STREAMING_XML), STREAMING_XML, source="rbexport.xml"
+        )
+
+        data = json.loads(store.path.read_text())
+        records = data["library"]["tracks"]
+        cloud = next(record for record in records.values() if record["title"] == "Cloud Edit")
+        cloud["title"] = "$A7:v1:PDHdijBIBsu1CSnE7Edt5g==:L89UTZ4YMWvHjboAFGhA5A=="
+        cloud["artist"] = "$A7:v1:tDdgm1yDnW+JT+gJNB5wnQ==:7M9kOmgGGZBq1ZDHhX7OejeXLs8JnOxIYDo+z/ym+mI="
+        cloud.pop("metadata_locked", None)
+        local = next(record for record in records.values() if record["title"] == "Local One")
+        local["comments"] = "my own note"
+        store.path.write_text(json.dumps(data))
+
+        repaired = Store(directory)
+        fixed = next(record for record in repaired.tracks_by_key().values() if record["id"] == cloud["id"])
+        self.assertEqual(fixed["title"], "SoundCloud track 862894612")
+        self.assertEqual(fixed["artist"], "")
+        self.assertTrue(fixed["metadata_locked"])
+        kept = next(record for record in repaired.tracks_by_key().values() if record["id"] == local["id"])
+        self.assertEqual(kept["comments"], "my own note")
+
     def test_cue_plans_from_an_older_layout_are_dropped(self):
         """A four-cue plan written before the eight-cue layout went in must not
         be shown (or written) as if it were current."""
@@ -1597,6 +1627,207 @@ class IngestApiTest(unittest.TestCase):
     def test_an_unknown_format_is_refused(self):
         with self.assertRaises(ValueError):
             self.api.ingest_scan({"source": str(self.root), "format": "flac"})
+
+
+class DuplicateApiTest(unittest.TestCase):
+    """The duplicate scan and the removal plan, through the API."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.tmp.name))
+        self.api = Api(self.store)
+        self.api.import_xml(XML, "fixture")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def keys(self, count=3):
+        return [track["key"] for track in self.api.tracks(None)["tracks"][:count]]
+
+    def test_a_repeated_track_is_one_group(self):
+        keys = self.keys()
+        report = self.api.duplicates({"order": [keys[0], keys[0], keys[1]]})
+        self.assertEqual(report["scope"], "set")
+        self.assertEqual(report["group_count"], 1)
+        self.assertEqual(report["duplicate_count"], 1)
+        self.assertEqual(report["groups"][0]["kind"], "same_track")
+
+    def test_removal_returns_the_order_to_apply(self):
+        keys = self.keys()
+        plan = self.api.remove_duplicates({"order": [keys[0], keys[1], keys[0]]})
+        self.assertEqual(plan["order"], [keys[0], keys[1]])
+        self.assertEqual(plan["removed_count"], 1)
+        self.assertEqual(plan["removed"][0]["key"], keys[0])
+
+    def test_the_pool_scope_reports_and_removes_nothing(self):
+        report = self.api.duplicates({"keys": self.keys()})
+        self.assertEqual(report["scope"], "pool")
+        self.assertEqual(report["groups"], [])
+
+    def test_an_empty_set_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.api.remove_duplicates({"order": []})
+
+
+def one_track_xml(path: str, *, streaming: bool = False) -> str:
+    location = (
+        "file://localhostsoundcloud:tracks:1"
+        if streaming
+        else "file://localhost" + urllib.parse.quote(path)
+    )
+    return (
+        '<DJ_PLAYLISTS Version="1.0.0"><PRODUCT Name="rekordbox" Version="7.0.0"/>'
+        '<COLLECTION Entries="1"><TRACK TrackID="1" Name="Old Name" Artist="Old Artist" '
+        f'Genre="House" AverageBpm="122" Tonality="8A" Location="{location}"/>'
+        '</COLLECTION><PLAYLISTS><NODE Type="0" Name="ROOT" Count="1">'
+        '<NODE Name="P" Type="1" KeyType="0" Entries="1"><TRACK Key="1"/></NODE>'
+        '</NODE></PLAYLISTS></DJ_PLAYLISTS>'
+    )
+
+
+class MetadataApiTest(unittest.TestCase):
+    """The track edit endpoint: library record, and the file when asked."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.store = Store(self.dir / "data")
+        self.api = Api(self.store)
+        self.file = self.dir / "track.wav"
+        with wave.open(str(self.file), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(44100)
+            handle.writeframes(b"\x00\x00" * 22050)
+        self.api.import_xml(one_track_xml(str(self.file)), "fixture")
+        self.key = next(iter(self.store.tracks_by_key()))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_an_edit_changes_the_view_and_survives_a_reload(self):
+        result = self.api.edit_track(
+            {"key": self.key, "fields": {"title": "New Name", "artist": "New Artist"}}
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["track"]["title"], "New Name")
+        self.assertEqual(result["track"]["artist"], "New Artist")
+        # The other records are untouched.
+        self.assertEqual(result["track"]["genre"], "House")
+        stored = Store(self.dir / "data").tracks_by_key()[self.key]
+        self.assertEqual(stored["title"], "New Name")
+
+    def test_bpm_and_key_edits_feed_the_harmonic_view(self):
+        result = self.api.edit_track(
+            {"key": self.key, "fields": {"bpm": "128", "key": "9A"}}
+        )
+        self.assertEqual(result["track"]["bpm"], 128.0)
+        self.assertEqual(result["track"]["camelot"], "9A")
+        self.assertEqual(result["track"]["tonality"], "Em")
+
+    def test_an_unknown_field_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.api.edit_track({"key": self.key, "fields": {"titel": "typo"}})
+
+    def test_an_unknown_track_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.api.edit_track({"key": "nope", "fields": {"title": "X"}})
+
+    def test_streaming_tracks_cannot_write_tags(self):
+        self.api.import_xml(one_track_xml("", streaming=True), "fixture")
+        key = next(iter(self.store.tracks_by_key()))
+        with self.assertRaises(ValueError):
+            self.api.edit_track({"key": key, "fields": {"title": "X"}, "write_tags": True})
+
+    @unittest.skipUnless(audio.status()["ffmpeg_ok"], "ffmpeg is not installed")
+    def test_write_tags_reaches_the_file(self):
+        result = self.api.edit_track(
+            {
+                "key": self.key,
+                "fields": {"title": "Tagged Name", "artist": "Tagged Artist"},
+                "write_tags": True,
+            }
+        )
+        self.assertIsNotNone(result["tags"])
+        from parity.ingest import probe
+
+        tags = probe(self.file)["tags"]
+        self.assertEqual(tags["title"], "Tagged Name")
+        self.assertEqual(tags["artist"], "Tagged Artist")
+        # The library record agrees with the file it just wrote.
+        self.assertEqual(self.store.tracks_by_key()[self.key]["title"], "Tagged Name")
+
+
+class PlaylistImportApiTest(unittest.TestCase):
+    """The M3U import and watch-folder endpoints."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.store = Store(self.dir / "data")
+        self.api = Api(self.store)
+        self.music = self.dir / "music"
+        self.music.mkdir()
+        for name in ("01_Ada_Kaleh_-_Night_Ferry.mp3", "Soha - Rivet.wav"):
+            (self.music / name).write_bytes(b"not really audio")
+
+    def tearDown(self):
+        self.api._stop_watch()
+        self.tmp.cleanup()
+
+    def test_an_m3u_becomes_a_playlist_the_pool_can_use(self):
+        result = self.api.import_m3u(
+            {
+                "text": "\n".join(
+                    [
+                        "#EXTM3U",
+                        "#PLAYLIST:Friday",
+                        f"#EXTINF:300,Ada Kaleh - Night Ferry",
+                        str(self.music / "01_Ada_Kaleh_-_Night_Ferry.mp3"),
+                        f"#EXTINF:300,Soha - Rivet",
+                        str(self.music / "Soha - Rivet.wav"),
+                    ]
+                ),
+                "name": "Friday",
+            }
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["added"], 2)
+        self.assertEqual(result["state"]["track_count"], 2)
+        playlist = result["state"]["playlists"][0]
+        self.assertEqual(playlist["name"], "Friday")
+        self.assertEqual(playlist["count"], 2)
+        self.assertEqual(len(result["state"]["folders"]), 1)
+
+    def test_the_same_file_is_not_added_twice(self):
+        path = str(self.music / "Soha - Rivet.wav")
+        self.api.import_m3u({"text": path, "name": "One"})
+        again = self.api.import_m3u({"text": path, "name": "Two"})
+        self.assertEqual(again["added"], 0)
+        self.assertEqual(again["matched"], 1)
+        self.assertEqual(again["state"]["track_count"], 1)
+
+    def test_the_watch_folder_imports_and_reports(self):
+        saved = self.api.watch_configure(
+            {"path": str(self.music), "enabled": False, "recursive": True}
+        )
+        self.assertFalse(saved["settings"]["enabled"])
+        tick = self.api.watch_tick()
+        self.assertEqual(tick["report"]["added"], 2)
+        self.assertEqual(tick["status"]["seen"], 2)
+        self.assertEqual(tick["state"]["track_count"], 2)
+        again = self.api.watch_tick()
+        self.assertEqual(again["report"]["added"], 0)
+
+    def test_a_missing_watch_folder_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.api.watch_configure({"path": str(self.dir / "nope"), "enabled": True})
+
+    def test_enabling_starts_and_disabling_stops_the_background_thread(self):
+        self.api.watch_configure({"path": str(self.music), "enabled": True})
+        self.assertTrue(self.api.watch_status()["running"])
+        self.api.watch_configure({"path": str(self.music), "enabled": False})
+        self.assertFalse(self.api.watch_status()["running"])
 
 
 if __name__ == "__main__":

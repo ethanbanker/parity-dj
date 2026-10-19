@@ -429,7 +429,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         panel.prompt = "Choose"
         panel.message = target == "destination"
             ? "Choose where the converted files should be written."
-            : "Choose the folder your downloads are in."
+            : target == "watch"
+                ? "Choose the folder new tracks land in."
+                : "Choose the folder your downloads are in."
         // Open where the field already points, if it points anywhere real.
         var isDirectory: ObjCBool = false
         if !start.isEmpty,

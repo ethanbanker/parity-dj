@@ -57,6 +57,104 @@ def is_local_path(path: str) -> bool:
     return bool(re.match(r"^[A-Za-z]:[\\/]", path))
 
 
+#: rekordbox keeps the names of streaming-service tracks encrypted in master.db,
+#: as ``$A7:v1:<nonce>:<ciphertext>``.  There is no key in the database and the
+#: service does not hand one out, so the ciphertext is not metadata to show --
+#: it is a string that happens to sit in the Name column.  These helpers replace
+#: it with the one fact that is readable: the service and the track id.
+ENCRYPTED_METADATA_RE = re.compile(
+    r"^\$A[0-9A-Fa-f]+:v\d+:[A-Za-z0-9+/]+={0,2}:[A-Za-z0-9+/]+={0,2}$"
+)
+
+#: The text fields a streaming row can have encrypted.  Everything else on the
+#: row (BPM, length, path, ids) is plain and stays useful.
+METADATA_FIELDS = ("title", "artist", "album", "genre", "label", "mix", "comments", "tonality")
+
+STREAMING_SERVICES = {
+    "spotify": "Spotify",
+    "soundcloud": "SoundCloud",
+    "beatport": "Beatport",
+    "beatsource": "Beatsource",
+    "tidal": "TIDAL",
+    "applemusic": "Apple Music",
+}
+
+
+def is_encrypted_metadata(value: object) -> bool:
+    """True for a value rekordbox stored as ``$A7:v1:<iv>:<ciphertext>``."""
+    return bool(ENCRYPTED_METADATA_RE.match(str(value or "").strip()))
+
+
+def _streaming_reference(location: str) -> tuple[str, str]:
+    """The service name and track id hiding in a streaming location."""
+    text = str(location or "").strip()
+    if text.startswith("file://localhost"):
+        text = text[len("file://localhost"):]
+    elif text.startswith("file://"):
+        text = unquote(urlparse(text).path).lstrip("/")
+    match = re.match(r"^([A-Za-z][A-Za-z0-9+.-]*):(.*)$", text)
+    if not match:
+        return "", ""
+    service = match.group(1).lower()
+    if service in {"http", "https"}:
+        return "", ""
+    parts = [part for part in match.group(2).strip("/").split(":") if part]
+    identifier = parts[-1] if parts else ""
+    if len(identifier) > 40:
+        identifier = identifier[:37] + "..."
+    return STREAMING_SERVICES.get(service, service.replace("-", " ").title()), identifier
+
+
+def encrypted_metadata_placeholder(location: str = "", track_id: str = "") -> str:
+    """A readable stand-in for a name rekordbox will not give us.
+
+    The service and id are the only parts of a streaming row that are not
+    encrypted, so they are what the pool can honestly show.  It is still enough
+    to tell two streaming rows apart and to look the track up in the service.
+    """
+    service, identifier = _streaming_reference(location)
+    if service and identifier:
+        return f"{service} track {identifier}"
+    if service:
+        return f"{service} track"
+    if track_id:
+        return f"Streaming track {track_id}"
+    return "Streaming track"
+
+
+def clean_metadata(
+    value: object, field: str, *, location: str = "", track_id: str = ""
+) -> str:
+    """Return ``value`` unless it is ciphertext, then a safe replacement."""
+    text = str(value or "")
+    if not is_encrypted_metadata(text):
+        return text
+    if field == "title":
+        return encrypted_metadata_placeholder(location, track_id)
+    return ""
+
+
+def scrub_metadata(record: dict) -> bool:
+    """Replace every encrypted text field in a track record, in place.
+
+    Works on both a stored record and a :class:`Track`, so a library imported
+    before this check existed is repaired when the app next opens it -- no
+    re-import, and user edits are left exactly where they are.
+    """
+    location = str(record.get("location") or "")
+    track_id = str(record.get("id") or record.get("track_id") or "")
+    changed = False
+    for field in METADATA_FIELDS:
+        value = record.get(field)
+        if not is_encrypted_metadata(value):
+            continue
+        record[field] = clean_metadata(value, field, location=location, track_id=track_id)
+        changed = True
+    if changed:
+        record["metadata_locked"] = True
+    return changed
+
+
 @dataclass
 class Track:
     """One row of the rekordbox collection."""
@@ -84,6 +182,18 @@ class Track:
     analysed: bool = False
     analysis_path: str = ""  # absolute path of the ANLZ file if it exists
     cues: list[dict] = field(default_factory=list)  # existing cue/memory points
+    #: True when rekordbox held back the name: the service and id are shown
+    #: instead of ciphertext (see :func:`scrub_metadata`).
+    metadata_locked: bool = False
+
+    def __post_init__(self) -> None:
+        # Catches a Track built with its fields in the constructor.  The readers
+        # assign fields one by one, so they call this again once location is set.
+        self.sanitize_metadata()
+
+    def sanitize_metadata(self) -> bool:
+        """Replace any encrypted name on this track; return whether it did."""
+        return scrub_metadata(self.__dict__)
 
     @property
     def key(self) -> str:
@@ -153,6 +263,7 @@ class Track:
             "stars": self.stars,
             "play_count": self.play_count,
             "year": self.year,
+            "track_number": self.track_number,
             "colour": self.colour,
             "path": self.path,
             "location": self.location,
@@ -161,6 +272,7 @@ class Track:
             "analysed": self.analysed,
             "analysis_path": self.analysis_path,
             "cues": [dict(cue) for cue in self.cues],
+            "metadata_locked": self.metadata_locked,
         }
 
 
@@ -321,6 +433,8 @@ def _read_track(element: ElementTree.Element) -> Track:
     track.colour = attrs.get("Colour", "") or ""
 
     track.cues = _read_cues(element)
+    # A rekordbox 7 export can carry a streaming row whose name is ciphertext.
+    track.sanitize_metadata()
 
     if not track.bpm:
         # Fall back to the first tempo marker.
