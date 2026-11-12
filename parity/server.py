@@ -14,6 +14,7 @@ import re
 import threading
 import time
 from dataclasses import asdict
+from html import escape as escape_html
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -33,6 +34,7 @@ from . import (
     preflight as preflight_mod,
     rekordbox,
     rxdb,
+    spotify as spotify_mod,
     structure as structure_mod,
     tags as tags_mod,
     watchfolder,
@@ -205,6 +207,14 @@ class Api:
         # the feature is switched on.
         self._watch_thread = None
         self._watch_stop = threading.Event()
+        # Spotify (see parity.spotify): the PKCE verifiers waiting for a
+        # callback, the client kept between requests so its access token
+        # survives, and the callback address serve() fills in with the bound
+        # port.  _spotify_transport is replaced by the tests.
+        self._spotify_pending: dict[str, dict] = {}
+        self._spotify_client: spotify_mod.Client | None = None
+        self.spotify_redirect = ""
+        self._spotify_transport = None
 
     # ---------------------------------------------------------- conversion
 
@@ -569,6 +579,270 @@ class Api:
         targets = payload.get("targets")
         result = builder.optimize_set(pool, config, targets=targets)
         return self.result_payload(result, views, config)
+
+    # ------------------------------------------------------------- spotify
+
+    def spotify_status(self) -> dict:
+        """What the Spotify panel needs to show: configured, connected, who.
+
+        The refresh token is never sent to the browser; ``connected`` is all the
+        UI needs to know about it.
+        """
+        saved = self.store.spotify_settings()
+        env = spotify_mod.settings_from_env()
+        client_id = str(saved.get("client_id") or env.get("client_id") or "")
+        redirect = (
+            str(saved.get("redirect_uri") or env.get("redirect_uri") or "")
+            or self.spotify_redirect
+            or spotify_mod.DEFAULT_REDIRECT
+        )
+        source = "saved" if saved.get("client_id") else ("environment" if env.get("client_id") else "")
+        return {
+            "available": True,
+            "client_id": client_id,
+            "client_id_source": source,
+            "redirect_uri": redirect,
+            "callback": self.spotify_redirect or "",
+            "connected": bool(saved.get("refresh_token")),
+            "user": str(saved.get("user_name") or ""),
+            "user_id": str(saved.get("user_id") or ""),
+            "connected_at": str(saved.get("connected_at") or ""),
+            "scopes": str(saved.get("scope") or "").split(),
+            "dashboard": "https://developer.spotify.com/dashboard",
+            "registered": redirect == (self.spotify_redirect or redirect),
+        }
+
+    def spotify_configure(self, payload: dict | None = None) -> dict:
+        """Save the app's client id and the redirect URI registered for it."""
+        payload = payload or {}
+        values: dict = {}
+        if "client_id" in payload:
+            values["client_id"] = str(payload.get("client_id") or "").strip()
+        if "redirect_uri" in payload:
+            redirect = str(payload.get("redirect_uri") or "").strip()
+            problem = spotify_mod.redirect_uri_problem(redirect)
+            if problem:
+                raise ValueError(problem)
+            values["redirect_uri"] = redirect
+        if not values:
+            raise ValueError("Nothing to save.")
+        self.store.set_spotify_settings(values)
+        self._spotify_client = None
+        LOG.info("spotify configured: client id %s", "set" if values.get("client_id") else "unchanged")
+        return {"ok": True, "status": self.spotify_status()}
+
+    def spotify_authorize(self) -> dict:
+        """Start the PKCE flow and return the page to approve on."""
+        status = self.spotify_status()
+        if not status["client_id"]:
+            raise ValueError(
+                "Paste your Spotify app's Client ID first. Create an app at "
+                f"{status['dashboard']} and copy the Client ID from its settings."
+            )
+        self._prune_spotify_pending()
+        verifier, challenge = spotify_mod.new_pkce()
+        state = spotify_mod.new_state()
+        self._spotify_pending[state] = {
+            "verifier": verifier,
+            "created": time.time(),
+            "redirect_uri": status["redirect_uri"],
+        }
+        return {
+            "authorize_url": spotify_mod.authorize_url(
+                status["client_id"], status["redirect_uri"], state, challenge
+            ),
+            "redirect_uri": status["redirect_uri"],
+        }
+
+    def _prune_spotify_pending(self) -> None:
+        cutoff = time.time() - spotify_mod.PENDING_TTL_SECONDS
+        for state in [s for s, item in self._spotify_pending.items() if item.get("created", 0) < cutoff]:
+            self._spotify_pending.pop(state, None)
+
+    def spotify_callback(self, query: dict[str, list[str]]) -> tuple[str, int]:
+        """The redirect target: exchange the code, save the refresh token.
+
+        Returns HTML rather than JSON because a browser lands here, and a page
+        that says what happened is the whole interface for this step.
+        """
+        def first(name: str) -> str:
+            return str((query.get(name) or [""])[0])
+
+        error = first("error")
+        if error:
+            return self._spotify_page(
+                "Spotify did not approve the connection.",
+                f"Spotify said: {error}. Press Connect Spotify in Parity to try again.",
+                ok=False,
+            ), 400
+
+        state = first("state")
+        code = first("code")
+        pending = self._spotify_pending.pop(state, None)
+        if pending is None:
+            return self._spotify_page(
+                "That connection link has expired.",
+                "Press Connect Spotify in Parity to start again. A link is only good once, within a few minutes.",
+                ok=False,
+            ), 400
+        if not code:
+            return self._spotify_page(
+                "Spotify did not return a code.",
+                "Press Connect Spotify in Parity to try again.",
+                ok=False,
+            ), 400
+
+        settings = self.store.spotify_settings()
+        client_id = str(
+            settings.get("client_id") or spotify_mod.settings_from_env().get("client_id") or ""
+        )
+        try:
+            token = spotify_mod.exchange_code(
+                client_id,
+                code,
+                pending["verifier"],
+                pending["redirect_uri"],
+                transport=self._spotify_transport,
+            )
+            if not token.refresh:
+                raise spotify_mod.SpotifyError(
+                    "Spotify approved the connection but did not return a refresh token, "
+                    "so the account could not be kept. Remove Parity's access in your "
+                    "Spotify account settings and connect again."
+                )
+            client = self._build_spotify_client(token)
+            me = client.me()
+        except spotify_mod.SpotifyError as exc:
+            return self._spotify_page("Spotify could not be connected.", str(exc), ok=False), 400
+
+        display = str(me.get("display_name") or me.get("id") or "")
+        self.store.set_spotify_settings(
+            {
+                "refresh_token": token.refresh,
+                "scope": token.scope or " ".join(spotify_mod.SCOPES),
+                "user_name": display,
+                "user_id": str(me.get("id") or ""),
+                "connected_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            }
+        )
+        self._spotify_client = client
+        LOG.info("spotify connected as %s", display or "(unknown)")
+        return self._spotify_page(
+            "Spotify is connected.",
+            f"Parity can now pull playlists and create them as {escape_html(display) if display else 'your account'}. "
+            "Close this tab and go back to Parity.",
+            ok=True,
+        ), 200
+
+    @staticmethod
+    def _spotify_page(title: str, message: str, *, ok: bool) -> str:
+        """A small standalone page for the OAuth callback tab."""
+        colour = "#3ecf8e" if ok else "#ff6b6b"
+        return (
+            "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+            f"<title>{escape_html(title)} · Parity</title></head>"
+            "<body style=\"margin:0;min-height:100vh;display:grid;place-items:center;"
+            "background:#0f1219;color:#e8ecf4;font:15px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif\">"
+            "<main style=\"max-width:32rem;padding:2rem;text-align:center\">"
+            f"<div style=\"width:38px;height:38px;margin:0 auto 1rem;border-radius:50%;border:3px solid {colour}\"></div>"
+            f"<h1 style=\"font-size:1.15rem;margin:0 0 .5rem\">{escape_html(title)}</h1>"
+            f"<p style=\"margin:0;color:#9aa4b8\">{message}</p>"
+            "<script>setTimeout(function(){window.close()},1200)</script>"
+            "</main></body></html>"
+        )
+
+    def _build_spotify_client(self, token: spotify_mod.Token) -> spotify_mod.Client:
+        settings = self.store.spotify_settings()
+        client_id = str(
+            settings.get("client_id") or spotify_mod.settings_from_env().get("client_id") or ""
+        )
+        return spotify_mod.Client(
+            client_id,
+            token,
+            transport=self._spotify_transport,
+            on_refresh=self._save_spotify_token,
+        )
+
+    def _save_spotify_token(self, token: spotify_mod.Token) -> None:
+        """Persist a rotated refresh token (Spotify does not always send one)."""
+        self.store.set_spotify_settings(
+            {"refresh_token": token.refresh, "scope": token.scope or ""}
+        )
+
+    def _spotify(self) -> spotify_mod.Client:
+        """The connected client, or a message naming what is missing."""
+        saved = self.store.spotify_settings()
+        refresh = str(saved.get("refresh_token") or "")
+        if not refresh:
+            raise ValueError("Spotify is not connected. Use the Spotify panel to connect it.")
+        if self._spotify_client and self._spotify_client.token.refresh == refresh:
+            return self._spotify_client
+        self._spotify_client = self._build_spotify_client(
+            spotify_mod.Token(refresh=refresh)  # no access token yet: the first call refreshes
+        )
+        return self._spotify_client
+
+    def spotify_import(self, payload: dict | None = None) -> dict:
+        """Pull a playlist and match it against the loaded library.
+
+        The matched rows are returned in the playlist's order as full track
+        views, so the UI can show them as the pool without a second request.
+        Nothing is written to the library: the playlist is a view of it.
+        """
+        payload = payload or {}
+        reference = str(
+            payload.get("url") or payload.get("playlist") or payload.get("id") or ""
+        ).strip()
+        if not reference:
+            raise ValueError("Paste a Spotify playlist link or id.")
+        playlist = spotify_mod.fetch_playlist(self._spotify(), reference)
+        views = self.all_views()
+        report = spotify_mod.match_playlist(playlist, views)
+        tracks = [views[key] for key in report["keys"] if key in views]
+        LOG.info(
+            "spotify pull %r: %d tracks, %d matched, %d missing",
+            playlist["name"], report["summary"]["total"],
+            report["summary"]["matched"], report["summary"]["missing"],
+        )
+        return {
+            "ok": True,
+            "playlist": {
+                "id": playlist["id"],
+                "name": playlist["name"],
+                "url": playlist["url"],
+                "owner": playlist["owner"],
+                "total": playlist["total"],
+                "description": playlist["description"],
+            },
+            "tracks": tracks,
+            "keys": report["keys"],
+            "matched": report["matched"],
+            "missing": report["missing"],
+            "summary": report["summary"],
+        }
+
+    def spotify_export(self, payload: dict | None = None) -> dict:
+        """Create a playlist from an ordered set of track keys."""
+        payload = payload or {}
+        views = self.all_views()
+        keys = payload.get("order") or payload.get("keys") or []
+        tracks = [views[key] for key in keys if key in views]
+        if not tracks:
+            raise ValueError("Build a set first -- there is nothing to send to Spotify.")
+        name = str(payload.get("name") or "Parity Set")
+        description = str(
+            payload.get("description")
+            or "Built with Parity: an energy curve, Camelot key and BPM aware set."
+        )
+        result = spotify_mod.create_playlist(
+            self._spotify(), name, tracks, description=description, public=bool(payload.get("public"))
+        )
+        LOG.info(
+            "spotify push %r: %d of %d tracks added (%d missing)",
+            result["playlist"]["name"], result["added"], len(tracks), len(result["missing"]),
+        )
+        return {"ok": True, **result}
 
     # ------------------------------------------------------------ preview
 
@@ -2320,6 +2594,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(api.rekordbox_status(Path(db_path).expanduser() if db_path else None))
         if route == "/api/write/status":
             return self._send_json(api.write_status())
+        if route == "/api/spotify":
+            return self._send_json(api.spotify_status())
+        if route == "/api/spotify/callback":
+            html, status = api.spotify_callback(query)
+            return self._send_bytes(
+                html.encode("utf-8"), "text/html; charset=utf-8", status=status
+            )
         return self._send_json({"error": "Unknown endpoint"}, status=404)
 
     def _handle_api_post(self, route: str, payload: dict) -> None:
@@ -2345,6 +2626,19 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "/api/rekordbox/connect":
             return self._send_json(api.connect_rekordbox(payload))
+
+        if route == "/api/spotify/config":
+            return self._send_json(api.spotify_configure(payload))
+        if route == "/api/spotify/auth":
+            return self._send_json(api.spotify_authorize())
+        if route == "/api/spotify/disconnect":
+            api.store.clear_spotify_account()
+            api._spotify_client = None
+            return self._send_json({"ok": True, "status": api.spotify_status()})
+        if route == "/api/spotify/import":
+            return self._send_json(api.spotify_import(payload))
+        if route == "/api/spotify/export":
+            return self._send_json(api.spotify_export(payload))
 
         if route == "/api/write/rekordbox":
             return self._send_json(api.write_rekordbox(payload))
@@ -2571,6 +2865,14 @@ def serve(host: str = "127.0.0.1", port: int = 8765, data_dir: Path | None = Non
     httpd = ThreadingHTTPServer((host, port), handler)
     httpd.daemon_threads = True
     httpd.api = api  # type: ignore[attr-defined] - so shutdown can stop the watcher
+    # The OAuth callback has to carry the port actually bound, because Spotify
+    # matches the redirect URI exactly and ``--port`` (or a busy 8765) changes
+    # it.  A wildcard bind is reported as loopback: that is the only address the
+    # browser should be sent to.
+    callback_host = "127.0.0.1" if host in {"", "0.0.0.0", "::"} else host
+    api.spotify_redirect = (
+        f"http://{callback_host}:{httpd.server_address[1]}/api/spotify/callback"
+    )
     if api.store.watch_settings().get("enabled"):
         api._start_watch()
     return httpd

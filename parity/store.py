@@ -35,6 +35,14 @@ LIBRARY_SCHEMA = 4
 #: The ingest options that are worth remembering between runs.
 INGEST_SETTING_KEYS = {"source", "destination", "format", "recursive", "measure", "trim_silence", "overwrite"}
 
+#: The Spotify settings that may be saved.  The refresh token is the whole
+#: credential for the connected account, so it is kept here and nowhere else --
+#: ``store.json`` is already the file the user's library edits live in.
+SPOTIFY_SETTING_KEYS = {
+    "client_id", "redirect_uri", "refresh_token", "scope",
+    "user_id", "user_name", "connected_at",
+}
+
 
 class Store:
     """Tiny JSON store with a process-wide lock (the HTTP server is threaded)."""
@@ -86,6 +94,9 @@ class Store:
             # The watch folder (parity.watchfolder): where it is, whether it is
             # on, and which files it has already imported.
             "watch": {},
+            # The Spotify app client id, redirect URI and the connected
+            # account's refresh token (see parity.spotify).
+            "spotify": {},
         }
 
     def _migrate_library(self) -> None:
@@ -641,6 +652,41 @@ class Store:
                 else:
                     saved[key] = value
             self._data["watch"] = saved
+            self.save()
+            return dict(saved)
+
+    # -------------------------------------------------------------- spotify
+
+    def spotify_settings(self) -> dict:
+        with self._lock:
+            return dict(self._data.get("spotify") or {})
+
+    def set_spotify_settings(self, values: dict) -> dict:
+        """Save the app id, redirect URI and the account's refresh token.
+
+        An empty value removes the key, which is how disconnecting forgets the
+        token without touching the client id the user typed in.
+        """
+        with self._lock:
+            saved = dict(self._data.get("spotify") or {})
+            for key, value in (values or {}).items():
+                if key not in SPOTIFY_SETTING_KEYS:
+                    continue
+                if value is None or value == "":
+                    saved.pop(key, None)
+                else:
+                    saved[key] = value
+            self._data["spotify"] = saved
+            self.save()
+            return dict(saved)
+
+    def clear_spotify_account(self) -> dict:
+        """Forget the connected account, keeping the app id and redirect URI."""
+        with self._lock:
+            saved = dict(self._data.get("spotify") or {})
+            for key in ("refresh_token", "scope", "user_id", "user_name", "connected_at"):
+                saved.pop(key, None)
+            self._data["spotify"] = saved
             self.save()
             return dict(saved)
 

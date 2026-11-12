@@ -6,14 +6,14 @@
 
 <p align="center">
   <strong>Build harmonic DJ sets from your rekordbox library — locally.</strong><br>
-  Energy curves, Camelot mixing, phrase-aware cues and one-click export, with no account and no cloud.
+  Energy curves, Camelot mixing, phrase-aware cues and one-click export, with no account and no cloud — plus optional Spotify playlist import and export.
 </p>
 
 <p align="center">
   <a href="https://www.python.org/"><img alt="Python 3.9+" src="https://img.shields.io/badge/python-3.9%2B-3776AB?logo=python&logoColor=white"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue">
-  <img alt="Local only" src="https://img.shields.io/badge/network-none-success">
+  <img alt="Local first" src="https://img.shields.io/badge/network-local%20first-success">
 </p>
 
 <p align="center">
@@ -22,14 +22,14 @@
 
 ---
 
-**Contents** · [Why Parity](#why-parity) · [Screenshots](#screenshots) · [Quick start](#quick-start) · [Build a set](#build-a-set) · [Cues](#cues-eight-pads-ah) · [Preview](#preview-and-listen) · [Library tools](#library-tools) · [Export](#export-and-write-back) · [How it works](#how-it-works) · [API](#api) · [Development](#development) · [Limitations](#limitations)
+**Contents** · [Why Parity](#why-parity) · [Screenshots](#screenshots) · [Quick start](#quick-start) · [Build a set](#build-a-set) · [Cues](#cues-eight-pads-ah) · [Preview](#preview-and-listen) · [Library tools](#library-tools) · [Spotify](#spotify) · [Export](#export-and-write-back) · [How it works](#how-it-works) · [API](#api) · [Development](#development) · [Limitations](#limitations)
 
 ## Why Parity
 
 - **It reads rekordbox, directly.** Parity opens `master.db` through a throwaway snapshot — playlists, folders, streaming flags and rekordbox's own ANLZ phrase analysis included. No XML export required.
 - **It builds a set, not a list.** A dynamic program fits the whole set to your energy curve, then simulated annealing repairs key clashes, tempo jumps and artist repetition.
 - **It explains itself.** Every build reports curve fit, worst deviation, harmonic percentage, beatmatch percentage and what the pool could not deliver.
-- **Nothing leaves your machine.** Parity binds to `127.0.0.1`, makes no network requests, and never opens your live rekordbox database for writing without an explicit action and a backup.
+- **Nothing leaves your machine.** Parity binds to `127.0.0.1`, sends nothing anywhere, and never opens your live rekordbox database for writing without an explicit action and a backup. The one exception is the optional Spotify panel, which talks to Spotify only while you are pulling or sending a playlist.
 
 The name is the idea: two tracks that are level with each other. The mark is a ring cut into two equal halves — cyan for the curve you asked for, coral for the set that came out.
 
@@ -175,6 +175,40 @@ Playback streams byte ranges from the local file, so a long WAV starts immediate
 
 **Manage libraries** under **Files & libraries ▾** renames or deletes playlists in rekordbox and AUTO/PILOT, and removes the built set's tracks from either — every deletion begins as a dry run that you confirm, and the audio files stay on disk.
 
+## Spotify
+
+**Files & libraries ▾ → Spotify** pulls a playlist in, or sends the built set out.
+It is the only part of Parity that uses the network, and only when you ask it to.
+
+**Connect once.** Create an app at [developer.spotify.com](https://developer.spotify.com/dashboard),
+add the redirect URI the panel shows (for example
+`http://127.0.0.1:8765/api/spotify/callback`) to its **Redirect URIs**, and paste
+the app's Client ID into the panel. *Connect Spotify* opens the approval page;
+Parity signs in with PKCE, so there is no client secret, and the only thing it
+keeps is one refresh token in `data/store.json`. A Development Mode app reaches
+only the users listed in its dashboard, and its owner needs Spotify Premium —
+which is enough for your own account.
+
+**Pull a playlist.** Paste a link, a `spotify:playlist:` URI or a bare id. Parity
+reads it in order, matches each row to a local file by artist and title (mix
+suffixes and bracketed versions included), and shows the matches as the pool — so
+**Build set** works on the order you curated in Spotify. The report names every
+track the library does not have, and labels a loose match as loose. Spotify only
+returns the contents of playlists the connected account owns or collaborates on,
+so copy someone else's list to your account first. Tracks are metadata: no audio
+is downloaded.
+
+**Send a set.** With a set in the builder, *Create playlist* looks each track up
+by artist and title, checks the length against the search result, creates a
+private playlist (public on the tick), and adds what it found. Tracks Spotify
+cannot place are listed rather than silently dropped. It is one search per
+track, so a 20-track set is 20 requests.
+
+Tempo, key and energy stay Parity's own. Spotify's audio-features endpoints are
+closed to new apps, so a pulled playlist cannot say that a track is 128 BPM in
+8A — the library's tags and rekordbox's analysis do that, or **Analyse audio**
+measures the file itself.
+
 ## Export and write-back
 
 | Destination | What it produces |
@@ -256,6 +290,13 @@ The server is a small JSON API on `127.0.0.1`. The UI uses it, and so can a scri
 | `GET /api/write/status` | Whether rekordbox / AUTO/PILOT can be written to now |
 | `POST /api/write/rekordbox` | Write cues and playlist order into `master.db` |
 | `POST /api/write/autopilot` | Write tracks and playlist order into AUTO/PILOT |
+| `GET /api/spotify` | App id, redirect URI and whether an account is connected |
+| `POST /api/spotify/config` | Save the Spotify app's Client ID and redirect URI |
+| `POST /api/spotify/auth` | Start the PKCE flow; returns the approval URL |
+| `GET /api/spotify/callback` | The redirect target; stores the refresh token |
+| `POST /api/spotify/import` | Pull a playlist and match it to the library |
+| `POST /api/spotify/export` | Create a playlist from an ordered set |
+| `POST /api/spotify/disconnect` | Forget the connected account |
 
 </details>
 
@@ -282,6 +323,7 @@ parity/
   waveform.py             three-band waveform peaks
   tags.py                 set tags and comment merging
   preflight.py            missing-file and duplicate checks
+  spotify.py              playlist pull/push and PKCE sign-in
   pdf.py                  dependency-free PDF writer
   exporting.py            XML, bundles, packages, CSV, TXT, HTML, PDF
   server.py               JSON API and static file server
@@ -304,7 +346,7 @@ Your data lives in `data/` (or `--data-dir`): `store.json` for edits, cue plans 
 python3 -m unittest discover -s tests -t .
 ```
 
-The suite covers 612 tests: key notation, the XML parser, energy heuristics, curve adherence, locks, the optimiser, every export format, HTML/PDF pagination and escaping, duplicate grouping, metadata validation and tag writing, tempo/key/grid estimation, M3U and watch-folder behaviour, the `master.db` reader and writer (through duck-typed stand-ins where pyrekordbox is absent), the API, a 1500-track round trip, and an HTTP smoke test of the real server.
+The suite covers 644 tests: key notation, the XML parser, energy heuristics, curve adherence, locks, the optimiser, every export format, HTML/PDF pagination and escaping, duplicate grouping, metadata validation and tag writing, tempo/key/grid estimation, M3U and watch-folder behaviour, the `master.db` reader and writer (through duck-typed stand-ins where pyrekordbox is absent), the API, a 1500-track round trip, and an HTTP smoke test of the real server.
 
 Two tests are skipped when `librosa` is not installed; the numpy path is tested independently.
 
@@ -331,6 +373,10 @@ python3 tools/install_extras.py --venv DIR # isolated virtualenv
 - **AUTO/PILOT sidecars are not written.** Track rows and playlist order are; analysis appears when AUTO/PILOT processes the track.
 - **The Mac app is a snapshot.** Rebuild it after changing the code; it is compiled for the architecture it was built on.
 - **The server has no password.** It binds `127.0.0.1` by default. If you use `--host` to expose it, every API action is available to anyone who can reach the port.
+- **Spotify is metadata, not audio.** A pulled playlist matches local files by artist and title; a remix can match the original, which is why a loose match is labelled in the report. Spotify serves no tempo or key to new apps, so those stay the library's own or measured from the file.
+- **A pulled playlist is a view, not a library row.** The pool shows the matched local tracks in Spotify's order, and it survives a reload only if you save the set. Choosing a library playlist on the left leaves the view.
+- **A Development Mode Spotify app is limited.** It reaches only the users listed in its dashboard, its owner needs Premium, and it can read only playlists the connected account owns or collaborates on. Spotify also rate-limits; a very long push can stop part-way, and the report says what was added.
+- **Spotify push searches one track at a time.** A set Spotify cannot place is reported, not guessed: the search has to agree on title, artist and length before a track is added.
 - **`master.db` is read-only until you ask for a write.** Reading uses a temporary copy. Writing requires an explicit action, a closed rekordbox and a backup.
 
 ## License

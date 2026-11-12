@@ -62,7 +62,10 @@ const state = {
   tagToken: 0,             // drops a tag answer that arrives after a newer set was built
   tagTimer: null,          // debounces the tag request to one per settled set
   dragging: null,
-  poolRows: []
+  poolRows: [],
+  spotify: null,            // /api/spotify status: app id, redirect, account
+  spotifyPlaylist: null,    // the pulled playlist shown as the pool, or null
+  spotifyKeys: []           // its matched track keys, in the playlist's order
 };
 
 /* ------------------------------------------------------------------ api */
@@ -951,6 +954,15 @@ function renderPlaylists() {
   parts.push(`<div class="leaf ${state.playlistId === null ? 'active' : ''}" data-playlist="">
       <span>All tracks</span><span class="count">${state.meta.track_count}</span></div>`);
 
+  // A pulled Spotify playlist is a selection of library rows, shown as the
+  // pool. It has no id in the library, so it gets its own leaf rather than
+  // pretending to be a rekordbox playlist.
+  if (state.spotifyPlaylist) {
+    parts.push(`<div class="leaf active" title="Pulled from Spotify ${escapeHtml(state.spotifyPlaylist.url || '')}">
+      <span>Spotify · ${escapeHtml(state.spotifyPlaylist.name)}</span>
+      <span class="count">${state.spotifyKeys.length}</span></div>`);
+  }
+
   const node = (item, depth) => {
     if (item.is_folder || item.children.length) {
       const open = depth < 1 ? 'open' : '';        return `<details ${open}><summary><span>${escapeHtml(item.name)}</span>
@@ -977,6 +989,9 @@ function renderPlaylists() {
 async function selectPlaylist(id, name, silent = false) {
   state.playlistId = id;
   state.playlistName = name || 'All tracks';
+  // Choosing a library playlist leaves the pulled Spotify view behind.
+  state.spotifyPlaylist = null;
+  state.spotifyKeys = [];
   try {
     const query = id ? `?playlist=${encodeURIComponent(id)}` : '';
     const data = await api(`/api/tracks${query}`);
@@ -2088,7 +2103,16 @@ async function refreshTracks() {
   renderLibraryStatus();
   const query = state.playlistId ? `?playlist=${encodeURIComponent(state.playlistId)}` : '';
   const data = await api(`/api/tracks${query}`);
-  state.pool = data.tracks || [];
+  const fetched = data.tracks || [];
+  // A pulled Spotify playlist is a selection of library rows, not the whole
+  // library. Refreshing after an analysis keeps that selection (with whatever
+  // the analysis just added) instead of quietly widening the pool.
+  if (state.spotifyPlaylist && state.spotifyKeys.length) {
+    const byKey = new Map(fetched.map((track) => [track.key, track]));
+    state.pool = state.spotifyKeys.map((key) => byKey.get(key)).filter(Boolean);
+  } else {
+    state.pool = fetched;
+  }
   state.trackIndex = new Map(state.pool.map((track) => [track.key, track]));
   state.set = state.set.map((track) => state.trackIndex.get(track.key) || track);
   renderPool(true);
@@ -2333,6 +2357,206 @@ async function analyseCues() {
   }
 }
 
+/* ------------------------------------------------------------- spotify */
+
+async function loadSpotifyStatus() {
+  try {
+    state.spotify = await api('/api/spotify');
+  } catch (error) {
+    state.spotify = { error: error.message };
+  }
+  syncSpotifyForm();
+  return state.spotify;
+}
+
+function syncSpotifyForm() {
+  const status = state.spotify || {};
+  const clientId = $('#spotifyClientId');
+  if (clientId && !clientId.value) clientId.value = status.client_id || '';
+  if ($('#spotifyRedirect')) $('#spotifyRedirect').value = status.redirect_uri || '';
+
+  const node = $('#spotifyStatus');
+  if (status.error) {
+    node.innerHTML = `<span class="bad">${escapeHtml(status.error)}</span>`;
+  } else if (status.connected) {
+    node.innerHTML = `Connected${status.user ? ` as <b>${escapeHtml(status.user)}</b>` : ''}`;
+  } else {
+    node.textContent = 'Not connected';
+  }
+  if ($('#spotifyConnect')) $('#spotifyConnect').disabled = !status.client_id;
+  if ($('#spotifyDisconnect')) $('#spotifyDisconnect').hidden = !status.connected;
+  if (status.redirect_uri && status.callback && status.redirect_uri !== status.callback) {
+    $('#spotifySummary').textContent =
+      `The saved redirect URI is ${status.redirect_uri}, but Parity is serving ${status.callback}. ` +
+      'Register the second one, or start Parity on the port the first one names.';
+  }
+}
+
+async function toggleSpotify() {
+  const panel = $('#spotifyPanel');
+  panel.hidden = !panel.hidden;
+  if (panel.hidden) return;
+  $('#spotifyReport').innerHTML = '';
+  $('#spotifySummary').textContent = '';
+  await loadSpotifyStatus();
+  // syncSpotifyForm may have put a redirect-URI warning here; do not hide it.
+  if (state.spotify && state.spotify.connected && !$('#spotifySummary').textContent) {
+    $('#spotifySummary').textContent = 'Connected — a playlist can be pulled, or the built set sent out.';
+  }
+}
+
+async function saveSpotifyApp() {
+  const clientId = ($('#spotifyClientId').value || '').trim();
+  const redirect = ($('#spotifyRedirect').value || '').trim();
+  try {
+    const answer = await api('/api/spotify/config', { client_id: clientId, redirect_uri: redirect });
+    state.spotify = answer.status;
+    syncSpotifyForm();
+    toast(clientId ? 'Spotify app saved.' : 'Spotify app id cleared.');
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function connectSpotify() {
+  try {
+    const { authorize_url: authorizeUrl } = await api('/api/spotify/auth', {});
+    const opened = window.open(authorizeUrl, '_blank', 'noopener');
+    $('#spotifyReport').innerHTML =
+      '<div>Approve Parity in the Spotify tab, then come back here — the account is stored by ' +
+      'the local server, so the panel updates when you reopen it.</div>' +
+      `<div><a href="${escapeHtml(authorizeUrl)}" target="_blank" rel="noopener">` +
+      'Open the Spotify approval page</a></div>';
+    if (!opened) toast('The browser blocked the tab — use the link in the panel.', true);
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function disconnectSpotify() {
+  try {
+    const answer = await api('/api/spotify/disconnect', {});
+    state.spotify = answer.status;
+    syncSpotifyForm();
+    $('#spotifyReport').innerHTML = '';
+    toast('Spotify disconnected — the refresh token was removed from store.json.');
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+function spotifyTable(rows, columns) {
+  if (!rows.length) return '';
+  const head = `<tr>${columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join('')}</tr>`;
+  const body = rows.slice(0, 40).map((row) =>
+    `<tr>${columns.map((column) =>
+      `<td>${escapeHtml(column.value(row))}</td>`).join('')}</tr>`).join('');
+  const more = rows.length > 40
+    ? `<div class="muted">…and ${rows.length - 40} more.</div>`
+    : '';
+  return `<table>${head}${body}</table>${more}`;
+}
+
+function renderSpotifyReport(result, kind) {
+  const body = [];
+  if (kind === 'pull') {
+    const playlist = result.playlist || {};
+    const summary = result.summary || {};
+    body.push(`<h4>${escapeHtml(playlist.name || 'Playlist')}` +
+      `${playlist.owner ? ` · ${escapeHtml(playlist.owner)}` : ''}</h4>`);
+    body.push(`<div>${summary.matched || 0} of ${summary.total || 0} tracks are in the library` +
+      `${summary.missing ? `, <span class="warn">${summary.missing} not found</span>` : ''}` +
+      `${summary.repeated ? `, ${summary.repeated} repeated row(s) collapsed` : ''}.` +
+      `${playlist.url ? ` <a href="${escapeHtml(playlist.url)}" target="_blank" rel="noopener">Open in Spotify</a>` : ''}</div>`);
+    if (result.matched && result.matched.length) {
+      body.push('<h4>In the pool</h4>');
+      body.push(spotifyTable(result.matched, [
+        { label: 'Spotify', value: (row) => `${row.artist} — ${row.title}` },
+        { label: 'Library', value: (row) => row.label },
+        { label: 'Match', value: (row) => row.match }
+      ]));
+    }
+    if (result.missing && result.missing.length) {
+      body.push('<h4>Not in the library</h4>');
+      body.push(spotifyTable(result.missing, [
+        { label: 'Artist', value: (row) => row.artist },
+        { label: 'Title', value: (row) => row.title },
+        { label: 'Album', value: (row) => row.album }
+      ]));
+    }
+    $('#spotifySummary').textContent =
+      `${summary.matched || 0} matched · ${summary.missing || 0} missing · pool set to the playlist order`;
+  } else {
+    const playlist = result.playlist || {};
+    const summary = result.summary || {};
+    body.push(`<h4>Created ${escapeHtml(playlist.name || 'playlist')}</h4>`);
+    body.push(`<div>${summary.added || 0} of ${summary.tracks || 0} tracks added` +
+      `${summary.missing ? `, <span class="warn">${summary.missing} not found on Spotify</span>` : ''}.` +
+      `${playlist.url ? ` <a href="${escapeHtml(playlist.url)}" target="_blank" rel="noopener">Open the playlist</a>` : ''}</div>`);
+    if (result.missing && result.missing.length) {
+      body.push('<h4>Not found on Spotify</h4>');
+      body.push(spotifyTable(result.missing, [
+        { label: 'Artist', value: (row) => row.artist },
+        { label: 'Title', value: (row) => row.title }
+      ]));
+    }
+    $('#spotifySummary').textContent =
+      `${summary.added || 0} added · ${summary.missing || 0} not found`;
+  }
+  $('#spotifyReport').innerHTML = body.join('');
+}
+
+async function spotifyImport() {
+  const url = ($('#spotifyUrl').value || '').trim();
+  if (!url) { toast('Paste a Spotify playlist link first.', true); return; }
+  const button = $('#spotifyImportBtn');
+  button.disabled = true;
+  $('#spotifySummary').textContent = 'Reading the playlist and matching it to the library…';
+  try {
+    const result = await api('/api/spotify/import', { url });
+    state.spotifyPlaylist = result.playlist;
+    state.spotifyKeys = result.keys || [];
+    state.pool = result.tracks || [];
+    state.playlistId = null;
+    state.playlistName = `Spotify · ${result.playlist.name}`;
+    state.trackIndex = new Map(state.pool.map((track) => [track.key, track]));
+    state.excluded = new Set();
+    renderPlaylists();
+    renderPool(true);
+    renderCurve();
+    renderSet();
+    renderSpotifyReport(result, 'pull');
+    toast(`${result.summary.matched} of ${result.summary.total} tracks matched — the pool is now “${result.playlist.name}”.`);
+  } catch (error) {
+    $('#spotifySummary').textContent = '';
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function spotifyExport() {
+  if (!state.set.length) { toast('Build a set first — there is nothing to send.', true); return; }
+  const name = ($('#setName').value || 'Parity Set').trim();
+  const button = $('#spotifyExportBtn');
+  button.disabled = true;
+  $('#spotifySummary').textContent = 'Looking the set up on Spotify…';
+  try {
+    const result = await api('/api/spotify/export', {
+      order: state.set.map((track) => track.key),
+      name,
+      public: $('#spotifyPublic').checked
+    });
+    renderSpotifyReport(result, 'push');
+    toast(`Created “${result.playlist.name}” with ${result.added} tracks.`);
+  } catch (error) {
+    $('#spotifySummary').textContent = '';
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 /* --------------------------------------------------------------- events */
 
 function attachEvents() {
@@ -2525,11 +2749,21 @@ function attachEvents() {
       if (tool === 'manage') toggleManage();
       else if (tool === 'ingest') toggleIngest();
       else if (tool === 'watch') toggleWatch();
+      else if (tool === 'spotify') toggleSpotify();
     });
   });
   $('#manageClose').addEventListener('click', () => { $('#managePanel').hidden = true; });
   $('#ingestClose').addEventListener('click', () => { $('#ingestPanel').hidden = true; });
   $('#watchClose').addEventListener('click', () => { $('#watchPanel').hidden = true; });
+  $('#spotifyClose').addEventListener('click', () => { $('#spotifyPanel').hidden = true; });
+  $('#spotifySaveId').addEventListener('click', saveSpotifyApp);
+  $('#spotifyConnect').addEventListener('click', connectSpotify);
+  $('#spotifyDisconnect').addEventListener('click', disconnectSpotify);
+  $('#spotifyImportBtn').addEventListener('click', spotifyImport);
+  $('#spotifyExportBtn').addEventListener('click', spotifyExport);
+  $('#spotifyUrl').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') spotifyImport();
+  });
   $('#watchSave').addEventListener('click', saveWatch);
   $('#watchScan').addEventListener('click', scanWatch);
   $('#watchPathPick').addEventListener('click', () => pickFolder('watch'));

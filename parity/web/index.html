@@ -67,6 +67,7 @@
         <button data-tool="manage">Manage libraries <small>playlists and tracks</small></button>
         <button data-tool="ingest">Rename &amp; convert <small>a folder of downloads</small></button>
         <button data-tool="watch">Watch folder &amp; M3U <small>import new files as they land</small></button>
+        <button data-tool="spotify">Spotify <small>pull a playlist, or send the set</small></button>
       </div>
     </div>
     <span id="libraryStatus" class="status">No library loaded</span>
@@ -409,6 +410,61 @@
     <button id="m3uBtn" class="btn tiny">Choose an .m3u / .m3u8…</button>
   </div>
   <input type="file" id="m3uPick" accept=".m3u,.m3u8,audio/x-mpegurl" hidden>
+</section>
+
+<section id="spotifyPanel" class="manage ingest" hidden>
+  <div class="pane-head">
+    <h2>Spotify</h2>
+    <span id="spotifyStatus" class="muted">Not connected</span>
+    <button id="spotifyClose" class="btn tiny ghost">Close</button>
+  </div>
+  <div class="ingest-form">
+    <div class="ingest-row">
+      <label class="field">
+        <span>App Client ID <small>developer.spotify.com → Create app</small></span>
+        <input id="spotifyClientId" class="text-input" placeholder="paste the Client ID"
+               aria-label="Spotify app Client ID">
+      </label>
+      <div class="manage-actions">
+        <button id="spotifySaveId" class="btn tiny">Save app</button>
+        <button id="spotifyConnect" class="btn tiny primary">Connect Spotify</button>
+        <button id="spotifyDisconnect" class="btn tiny ghost" hidden>Disconnect</button>
+      </div>
+    </div>
+    <label class="field">
+      <span>Redirect URI <small class="muted">add this exact address to the app's Redirect URIs</small></span>
+      <input id="spotifyRedirect" class="text-input" aria-label="Spotify redirect URI">
+    </label>
+    <p class="manage-note">
+      Spotify needs an app of your own: create one, put this redirect URI in it, and paste the
+      Client ID above. No client secret is used — parity signs in with PKCE and keeps only the
+      account's refresh token, in <b>store.json</b>. A Development Mode app only reaches the
+      users listed in its dashboard, its owner needs Premium, and Spotify returns the contents
+      of playlists the connected account owns or collaborates on — so copy someone else's
+      playlist to your account before pulling it.
+    </p>
+    <label class="field">
+      <span>Pull a playlist <small>matched to the library and shown as the pool, in its own order</small></span>
+      <div class="path-row">
+        <input id="spotifyUrl" class="text-input" placeholder="https://open.spotify.com/playlist/…"
+               aria-label="Spotify playlist link or id">
+        <button id="spotifyImportBtn" class="btn tiny">Pull playlist</button>
+      </div>
+    </label>
+    <div class="ingest-row">
+      <label class="field">
+        <span>Send the built set</span>
+        <div class="path-row">
+          <button id="spotifyExportBtn" class="btn tiny primary">Create playlist</button>
+          <label class="pool-toggle" title="Public playlists appear on your profile. Private is the default.">
+            <input type="checkbox" id="spotifyPublic"> Public
+          </label>
+        </div>
+      </label>
+    </div>
+  </div>
+  <div class="manage-actions ingest-actions"><span id="spotifySummary" class="muted"></span></div>
+  <div id="spotifyReport" class="write-report-body ingest-report"></div>
 </section>
 
 <section id="cuePanel" class="manage cue-editor" hidden>
